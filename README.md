@@ -4,10 +4,11 @@
 
 **WorkBuddy 成长中心 · 全能签到脚本 · 单文件自包含**
 
-🔐 Token 永续 · ✅ 18 项任务 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📢 内置推送 · 🐧 青龙友好
+🔐 Token 永续 · ✅ 18 项任务 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📢 内置推送 · 🐧 青龙友好 · ☁️ 支持 GitHub Actions
 
 <img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white" />
 <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20%E9%9D%92%E9%BE%99-4EAA25?style=for-the-badge&logo=linux&logoColor=white" />
+<img src="https://img.shields.io/badge/Deploy-%E9%9D%92%E9%BE%99%20%7C%20GitHub%20Actions-2088FF?style=for-the-badge&logo=githubactions&logoColor=white" />
 <img src="https://img.shields.io/badge/Deps-requests%20only-A78BFA?style=for-the-badge&logo=pypi&logoColor=white" />
 <img src="https://img.shields.io/badge/Self--contained-1%20file-FFC75F?style=for-the-badge&logo=files&logoColor=white" />
 <img src="https://img.shields.io/badge/License-MIT-F472B6?style=for-the-badge" />
@@ -23,10 +24,12 @@
 > 🎯 一句话：**配一个刷新令牌，剩下交给它。**
 >
 > 📦 **单文件自包含**：无需任何配套模块（专家市场数据、推送通知全部内置），青龙上传一个 `workbuddy_daily.py` 即可运行。
+>
+> ☁️ **云端部署**：除了青龙，也支持直接跑在 **GitHub Actions** 上，零服务器、定时自动执行。
 
 ---
 
-## 🚀 快速开始（青龙面板三步）
+## 🚀 部署方式一：青龙面板（三步）
 
 | 步骤 | 操作 |
 | :---: | :--- |
@@ -38,6 +41,42 @@
 # 依赖（仅一个）
 pip3 install requests
 ```
+
+---
+
+## ☁️ 部署方式二：GitHub Actions（零服务器 · 推荐）
+
+> 本仓库已内置工作流 [`.github/workflows/workbuddy.yml`](.github/workflows/workbuddy.yml)，**Fork 或直接使用本仓库**即可开启云端定时签到。
+
+### 第 1 步：添加 Secrets（仓库 → Settings → Secrets and variables → Actions）
+
+| Secret 名称 | 必填 | 值 |
+| :--- | :---: | :--- |
+| `WORKBUDDY_REFRESH_TOKEN` | ✅ | 每行一个 `手机号:AT:RT`（多账号换行分隔） |
+| `PUSHPLUS_TOKEN` | ⬜ | 可选，PushPlus 推送令牌 |
+
+> 点 **New repository secret**，Name 填上面的名称，Secret 粘贴对应的值，保存。
+
+### 第 2 步：开启 Actions
+进入仓库 **Actions** 标签页，若提示需要启用，点 **I understand my workflows, go ahead and enable them**。
+
+### 第 3 步：手动跑一次验证
+Actions → 左侧选 **🌱 WorkBuddy Daily** → **Run workflow** → 选 `main` 分支 → 运行。看到 ✅ 即部署成功。
+
+### 内置定时（北京时间）
+| 时间 | UTC cron | 说明 |
+| :---: | :---: | :--- |
+| 07:00 | `0 23 * * *` | 日常全流程 |
+| 12:00 | `0 4 * * *` | 日常全流程 |
+| 23:30 | `30 15 * * *` | 夜猫子活动窗口 |
+
+> 需要改时间，编辑 `workbuddy.yml` 里的 `cron`（**注意是 UTC，北京时间 − 8 小时**）。
+
+### ⚠️ 令牌状态与安全（重要）
+- 脚本每次续期都会**轮换刷新令牌**并写入 `wb_refresh_tokens.json`。
+- 工作流内置安全判断：**仅在「私有仓库」中**把 `wb_refresh_tokens.json` 提交回仓库；**公开仓库会自动跳过**，避免 RT 泄露。
+- **强烈建议**：如果你 Fork 本仓库用于部署，**请把 Fork 后的仓库设为 Private**（Settings → General → 拉到底 → Change visibility → Private），这样令牌才能安全持久化，续期不中断。
+- 若使用公开仓库，令牌不会持久化，**每次运行都依赖 `WORKBUDDY_REFRESH_TOKEN` 这个 Secret 提供最新 RT**——需自行保证其不过期。
 
 ---
 
@@ -96,6 +135,8 @@ python workbuddy_daily.py --only 3       # 只跑第 3 个账号
 
 桌面端对话 1 次 · 尝鲜热门技能
 
+> 💡 桌面任务需 Windows 桌面端环境（青龙 / GitHub Actions 均为 Linux，会自动跳过）。
+
 </details>
 
 <details>
@@ -110,6 +151,7 @@ python workbuddy_daily.py --only 3       # 只跑第 3 个账号
 ## ⚙️ 特别之处
 
 - **📦 单文件自包含**：专家市场数据、PushPlus 推送全部内置，**无需任何外部模块**，部署零负担
+- **☁️ 多云部署**：青龙面板 / GitHub Actions / 本地 Windows 均可运行
 - **🏪 内置专家市场**：直接拉取专家团 / 普通专家 / 模板场景，网络异常时自动使用内置兜底数据
 - **📊 结构化报告**：每账号一行摘要 + 总计 + 待办分布，推送一目了然不截断
 - **🔄 续期节奏**：距上次刷新 > 10 天 或 AT 7 天内过期 → 自动刷新（离线会话 30 天失效）
@@ -146,6 +188,9 @@ python workbuddy_daily.py --only 3       # 只跑第 3 个账号
 
 ```
 WorkBuddy-Daily/
+├── .github/
+│   └── workflows/
+│       └── workbuddy.yml   # GitHub Actions 定时工作流
 ├── workbuddy_daily.py      # 主脚本（单文件自包含）
 ├── requirements.txt        # 依赖（仅 requests）
 ├── .gitignore              # 屏蔽凭据/运行数据
@@ -157,7 +202,7 @@ WorkBuddy-Daily/
 
 ## 🔒 隐私说明
 
-脚本**不含任何账号、手机号、Token 或设备信息**，所有凭据均由环境变量注入。请妥善保管你的 `wb_refresh_tokens.json`。
+脚本**不含任何账号、手机号、Token 或设备信息**，所有凭据均由环境变量（或 GitHub Secrets）注入。请妥善保管你的 `wb_refresh_tokens.json`。
 
 ---
 
