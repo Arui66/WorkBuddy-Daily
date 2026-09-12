@@ -33,9 +33,25 @@
 
 🔑 环境变量
    WORKBUDDY_REFRESH_TOKEN   【必填】多账号刷新令牌，换行分隔
-                             格式：手机号:AT:RT（AT 可留空）
-                             首次运行自动生成 wb_refresh_tokens.json 并持续维护
    PUSHPLUS_TOKEN            【可选】推送通知
+
+获取变量值（首次必看）
+   第一步：在电脑上安装并登录 WorkBuddy 桌面端
+   第二步：登录成功后，用记事本打开下面的文件：
+      C:/Users/你的用户名/AppData/Local/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info
+      (AppData 是隐藏文件夹，文件管理器地址栏直接粘贴上面的路径即可)
+   第三步：在文件里搜索 accessToken 和 refreshToken，后面各跟一串很长的
+      eyJ 开头的字符串，那就是 AT 和 RT
+   第四步：按下面的格式拼一行，多个账号就写多行：
+
+      手机号:AT那串:RT那串
+
+   示例（1个账号写一行，换行分隔）：
+      1XXXXXXXXXX:eyJhbGciOiJSUzI1NiIs...很长...:eyJhbGciOiJIUzUxMiIs...也很长...
+      1XXXXXXXXXX:eyJhbGciOiJSUzI1NiIs...:eyJhbGciOiJIUzUxMiIs...
+
+   ⚠️ 注意：AT 和 RT 之间用英文冒号 : 分隔，等号后面的引号不要带
+   ⚠️ RT 是你唯一的续期凭据，泄露了别人就能操作你的账号
 
 📦 任务清单
    ☁️ 云端任务（14 项，纯 API）
@@ -75,6 +91,80 @@ except Exception:
 BASE = "https://www.workbuddy.cn"
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) WorkBuddy/5.5.4 Chrome/138.0.7204.251 Electron/37.10.3 Safari/537.36"
 QQ_TPL = "cb_y5Dy46tPQGGWtueMxXbe"          # 企鹅教师助手模板
+
+
+# ---------- 专家市场数据（内联，无需外部模块） ----------
+EXPERT_MARKETPLACE_URL = "https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/expert-marketplace/expert_center.json"
+_expert_cache = None
+
+
+def _extract_name(val):
+    if isinstance(val, dict):
+        return val.get("zh", val.get("en", str(val)))
+    return str(val)
+
+
+def fetch_expert_marketplace():
+    """拉取专家市场配置（带缓存）"""
+    global _expert_cache
+    if _expert_cache is not None:
+        return _expert_cache
+    try:
+        s = requests.Session()
+        s.trust_env = False
+        s.headers.update({"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
+        r = s.get(EXPERT_MARKETPLACE_URL, timeout=15, verify=False)
+        if r.status_code == 200:
+            _expert_cache = r.json()
+            return _expert_cache
+    except Exception:
+        pass
+    return None
+
+
+def get_team_experts(count=5):
+    """专家团列表"""
+    data = fetch_expert_marketplace()
+    if not data:
+        return []
+    team = []
+    for e in data.get("experts", []):
+        meta = e.get("_meta", {})
+        if meta.get("expertType") == "team" or e.get("expertType") == "team":
+            team.append({"id": e["id"], "name": _extract_name(e.get("displayName", e.get("name", {}))),
+                         "industryId": meta.get("industryId", e.get("industryId", "")),
+                         "profession": _extract_name(e.get("profession", "")),
+                         "defaultInitPrompt": _extract_name(e.get("defaultInitPrompt", ""))})
+    return team[:count]
+
+
+def get_normal_experts(count=10):
+    """普通专家列表"""
+    data = fetch_expert_marketplace()
+    if not data:
+        return []
+    normal = []
+    for e in data.get("experts", []):
+        meta = e.get("_meta", {})
+        if meta.get("expertType", e.get("expertType", "")) == "agent":
+            normal.append({"id": e["id"], "name": _extract_name(e.get("displayName", e.get("name", {}))),
+                           "industryId": meta.get("industryId", e.get("industryId", "")),
+                           "profession": _extract_name(e.get("profession", "")),
+                           "defaultInitPrompt": _extract_name(e.get("defaultInitPrompt", ""))})
+    return normal[:count]
+
+
+def get_template_scenes(count=5):
+    """模板场景列表（失败时用内置兜底）"""
+    data = fetch_expert_marketplace()
+    fallback = [{"id": "01-ProductDesign", "name": "产品设计"}, {"id": "02-Marketing", "name": "营销文案"},
+                {"id": "03-DataAnalysis", "name": "数据分析"}, {"id": "04-CodeReview", "name": "代码审查"},
+                {"id": "05-Report", "name": "报告撰写"}]
+    if not data:
+        return fallback[:count]
+    scenes = [{"id": c["id"], "name": _extract_name(c.get("name", {}))} for c in data.get("categories", [])[:count]]
+    return scenes or fallback[:count]
+
 THEME_KEY = "theme-tkmw7j"                   # 和平精英激战金秋
 LIB_DOC_URL = "https://www.workbuddy.cn/space/d/o0KWYeynteVv06UnAZqIFm"
 SKILL_NAME = "algorithmic-trading"
@@ -299,13 +389,6 @@ def load_accounts():
         items = [x.strip() for x in env.replace("@", "\n").splitlines() if x.strip()]
         return [{"note": "账号%d" % (i + 1), "access_token": t}
                 for i, t in enumerate(items)]
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    try:
-        from workbuddy_checkin import BUILTIN_ACCOUNTS  # 可选：兼容旧版账号文件
-        if BUILTIN_ACCOUNTS:
-            return BUILTIN_ACCOUNTS
-    except Exception:
-        pass
     print("未找到账号：请设置环境变量 WORKBUDDY_REFRESH_TOKEN（每行 手机号:AT:RT）")
     sys.exit(1)
 
@@ -483,7 +566,6 @@ def t_accept_all(s, uid, nick, log):
 def t_team_3(s, uid, nick, log):
     """召唤3次专家团：真实团队对话+全字段遥测"""
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from workbuddy_checkin import get_team_experts
     teams = get_team_experts(10)
     if not teams:
         return
@@ -601,7 +683,6 @@ def t_black_cat(s, uid, nick, log):
 def t_expert_5(s, uid, nick, log):
     """召唤5次专家：普通专家遥测"""
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from workbuddy_checkin import get_normal_experts
     experts = get_normal_experts(20)
     for i in range(5):
         st, cur, tgt = prog(s, "expert_5")
@@ -1210,6 +1291,8 @@ def run_account(idx, acc, do_desktop):
     nick = nickname_of(tok)
     s = new_api(tok)
     msgs = []
+    summary = {"idx": idx, "note": acc.get("note", ""), "credits": "", "usage": "", "growth": "",
+               "done": 0, "total": 0, "rest": [], "level": "?", "energy": "?"}
 
     tag = "账号%d" % idx
     def log(m):
@@ -1226,6 +1309,8 @@ def run_account(idx, acc, do_desktop):
     prof = s.get(BASE + "/v2/activity/growth/profile", timeout=25, verify=False).json().get("data", {})
     energy = s.get(BASE + "/v2/activity/growth/energy", timeout=25, verify=False).json().get("data", {}).get("balance")
     streak = s.get(BASE + "/v2/activity/growth/streak", timeout=25, verify=False).json().get("data", {}).get("streak", {})
+    summary["credits"] = credits
+    summary["usage"] = usage
     log("💰 积分: %s%s" % (credits, " [付费]" if paid else ""))
     log("📊 用量: %s" % usage)
     try:
@@ -1285,9 +1370,66 @@ def run_account(idx, acc, do_desktop):
     done = sum(1 for t in st_all if isinstance(t, dict) and t.get("accept_status") in ("claimed", "completed"))
     rest = [t.get("task_code") for t in st_all if isinstance(t, dict) and t.get("accept_status") not in ("claimed", "completed")]
     prof2 = s.get(BASE + "/v2/activity/growth/profile", timeout=25, verify=False).json().get("data", {})
+    summary.update({"done": done, "total": len(st_all), "rest": rest,
+                    "level": prof2.get("level", "?"), "energy": energy})
     log("🏁 %s: 完成%s/%s 等级%s 剩余: %s" % (acc.get("note", ""), done, len(st_all), prof2.get("level", "?"),
                                              ", ".join(rest) if rest else "无"))
-    return msgs
+    return msgs, summary
+
+
+
+# ---------- 推送摘要（精简版，避免超长截断） ----------
+def build_summary(summaries):
+    """每账号一行摘要 + 总计，控制在一屏内"""
+    summaries.sort(key=lambda x: x.get("idx", 0))
+    lines = ["📋 账号概览 (%d个)" % len(summaries), ""]
+    total_done = total_tasks = 0
+    for sm in summaries:
+        total_done += sm.get("done", 0)
+        total_tasks += sm.get("total", 0)
+        rest = sm.get("rest") or []
+        rest_str = ("｜待办:%d项" % len(rest)) if rest else "｜✅全清"
+        lines.append("👤 %s  等级%s  完成%s/%s%s" % (sm.get("note", "")[:14], sm.get("level", "?"),
+                                                  sm.get("done", 0), sm.get("total", 0), rest_str))
+    lines.append("")
+    lines.append("🏆 总计: %d/%d 项已完成" % (total_done, total_tasks))
+    # 待办汇总
+    all_rest = {}
+    for sm in summaries:
+        for r in (sm.get("rest") or []):
+            all_rest[r] = all_rest.get(r, 0) + 1
+    if all_rest:
+        lines.append("")
+        lines.append("📌 待办分布:")
+        for code, cnt in sorted(all_rest.items(), key=lambda x: -x[1]):
+            lines.append("  · %s ×%d" % (code, cnt))
+    lines.append("")
+    lines.append("🕐 %s" % time.strftime("%Y-%m-%d %H:%M"))
+    return "\n".join(lines)
+
+
+# ---------- 推送通知（内置 PushPlus，无需外部模块） ----------
+def send_notify(title, content):
+    """PushPlus 推送；未配置 PUSHPLUS_TOKEN 则跳过"""
+    token = os.environ.get("PUSHPLUS_TOKEN", "").strip()
+    if not token:
+        return False
+    # 内容过长时截断（PushPlus 上限约 2 万字）
+    if len(content) > 18000:
+        content = content[:18000] + "\n...(内容过长已截断)"
+    try:
+        s = requests.Session(); s.trust_env = False
+        r = s.post("https://www.pushplus.plus/send",
+                   json={"token": token, "title": title, "content": content, "template": "txt"},
+                   timeout=20, verify=False)
+        d = r.json()
+        if d.get("code") == 200:
+            print("📢 推送成功")
+            return True
+        print("📢 推送失败: %s" % str(d.get("msg", ""))[:80])
+    except Exception as e:
+        print("📢 推送异常: %s" % str(e)[:80])
+    return False
 
 
 def main():
@@ -1313,22 +1455,23 @@ def main():
         print("⚠️ 非Windows环境(青龙/云服务器)，自动跳过桌面任务(RichMeow/技能需一次性在Windows桌面端完成)")
         do_desktop = False
     all_msgs = []
+    summaries = []
     if QUERY_ONLY:
         with ThreadPoolExecutor(max_workers=min(6, len(ACCOUNTS))) as ex:
             futs = {ex.submit(run_account, i + 1, acc, False): i for i, acc in enumerate(ACCOUNTS)}
             for f in as_completed(futs):
-                all_msgs.extend(f.result())
+                msgs_part, sm = f.result()
+                all_msgs.extend(msgs_part)
+                summaries.append(sm)
     else:
         # 云端任务并发，桌面任务串行
         for i, acc in enumerate(ACCOUNTS):
-            all_msgs.extend(run_account(i + 1, acc, do_desktop))
+            msgs_part, sm = run_account(i + 1, acc, do_desktop)
+            all_msgs.extend(msgs_part)
+            summaries.append(sm)
             time.sleep(2)
-    # 推送
-    try:
-        from notify import send
-        send("WorkBuddy 全能脚本", "\n".join(all_msgs))
-    except Exception:
-        pass
+    # 推送摘要（完整日志见青龙日志/控制台）
+    send_notify("🌱 WorkBuddy 签到报告", build_summary(summaries))
 
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
