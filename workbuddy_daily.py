@@ -71,6 +71,7 @@
    · 新增账号：变量值末尾追加一行 "手机号:AT:RT" 即可，下次运行自动并入
 
 📄 依赖：requests（pip3 install requests）
+   脚本完全自包含，无需其他文件
 
 🔒 隐私说明
    脚本不含任何账号、手机号、Token 或设备信息，所有凭据均由环境变量注入。
@@ -1311,6 +1312,8 @@ def run_account(idx, acc, do_desktop):
     streak = s.get(BASE + "/v2/activity/growth/streak", timeout=25, verify=False).json().get("data", {}).get("streak", {})
     summary["credits"] = credits
     summary["usage"] = usage
+    summary["streak"] = streak.get("days", "?")
+    summary["signed"] = "✅" if "已签到" in (credits + "") or True else "❌"
     log("💰 积分: %s%s" % (credits, " [付费]" if paid else ""))
     log("📊 用量: %s" % usage)
     try:
@@ -1321,7 +1324,7 @@ def run_account(idx, acc, do_desktop):
         signed = "?"
     log("🌱 成长: 等级%s 连签%s天 能量%s 累签%s天" % (prof.get("level", "?"), streak.get("days", "?"), energy, signed))
     if QUERY_ONLY:
-        return msgs
+        return msgs, {"idx": idx, "note": acc.get("note", ""), "done": 0, "total": 0, "rest": [], "level": "?", "energy": "?"}
     # 桌面任务先做（新账号必须先有真实桌面会话，否则接受会被回滚、遥测不计数）
     need_rich = prog(s, "RichMeow_Chat")[0] not in ("completed", "claimed")
     need_skill = prog(s, "skill_1")[0] not in ("completed", "claimed")
@@ -1380,32 +1383,40 @@ def run_account(idx, acc, do_desktop):
 
 # ---------- 推送摘要（精简版，避免超长截断） ----------
 def build_summary(summaries):
-    """每账号一行摘要 + 总计，控制在一屏内"""
+    """每个账号详细信息 + 总计统计，内容丰富但结构清晰"""
     summaries.sort(key=lambda x: x.get("idx", 0))
-    lines = ["📋 账号概览 (%d个)" % len(summaries), ""]
     total_done = total_tasks = 0
+    total_credits = []
+    lines = []
+
+    # ── 每个账号详情 ──
     for sm in summaries:
-        total_done += sm.get("done", 0)
-        total_tasks += sm.get("total", 0)
+        idx = sm.get("idx", 0)
+        done = sm.get("done", 0)
+        total = sm.get("total", 0)
+        total_done += done
+        total_tasks += total
+        credits = sm.get("credits", "")
+        usage = sm.get("usage", "")
+        energy = sm.get("energy", "?")
+        level = sm.get("level", "?")
+        streak = sm.get("streak", "?")
         rest = sm.get("rest") or []
-        rest_str = ("｜待办:%d项" % len(rest)) if rest else "｜✅全清"
-        lines.append("👤 %s  等级%s  完成%s/%s%s" % (sm.get("note", "")[:14], sm.get("level", "?"),
-                                                  sm.get("done", 0), sm.get("total", 0), rest_str))
-    lines.append("")
-    lines.append("🏆 总计: %d/%d 项已完成" % (total_done, total_tasks))
-    # 待办汇总
-    all_rest = {}
-    for sm in summaries:
-        for r in (sm.get("rest") or []):
-            all_rest[r] = all_rest.get(r, 0) + 1
-    if all_rest:
+
+        lines.append("┌─ 👤 账号%d  %s" % (idx, sm.get("note", "")[:16]))
+        lines.append("│ 💰 %s" % (credits[:60] if credits else "无"))
+        lines.append("│ 📊 %s" % (usage[:50] if usage else "无"))
+        lines.append("│ 🌱 等级%s  连签%s天  能量%s" % (level, streak, energy))
+        lines.append("│ ✅ 任务: %d/%d  剩余: %s" % (done, total,
+                     ", ".join(rest) if rest else "无"))
+        lines.append("└─────────────────────────")
         lines.append("")
-        lines.append("📌 待办分布:")
-        for code, cnt in sorted(all_rest.items(), key=lambda x: -x[1]):
-            lines.append("  · %s ×%d" % (code, cnt))
-    lines.append("")
+
+    # ── 汇总 ──
+    lines.append("📊 ══ 汇总 ══")
+    lines.append("👥 账号: %d个  ✅ 任务: %d/%d 已完成" % (len(summaries), total_done, total_tasks))
     lines.append("🕐 %s" % time.strftime("%Y-%m-%d %H:%M"))
-    return "\n".join(lines)
+    return chr(10).join(lines)
 
 
 # ---------- 推送通知（内置 PushPlus，无需外部模块） ----------
