@@ -2,13 +2,14 @@
 
 # 🌱 WorkBuddy Daily
 
-**WorkBuddy 成长中心 · 全能签到脚本**
+**WorkBuddy 成长中心 · 全能签到脚本 · 单文件自包含**
 
-🔐 Token 永续 · ✅ 18 项任务 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📢 微信推送 · 🐧 青龙友好
+🔐 Token 永续 · ✅ 18 项任务 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📢 内置推送 · 🐧 青龙友好
 
 <img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white" />
 <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20%E9%9D%92%E9%BE%99-4EAA25?style=for-the-badge&logo=linux&logoColor=white" />
 <img src="https://img.shields.io/badge/Deps-requests%20only-A78BFA?style=for-the-badge&logo=pypi&logoColor=white" />
+<img src="https://img.shields.io/badge/Self--contained-1%20file-FFC75F?style=for-the-badge&logo=files&logoColor=white" />
 <img src="https://img.shields.io/badge/License-MIT-F472B6?style=for-the-badge" />
 
 </div>
@@ -20,6 +21,8 @@
 一个脚本搞定 **WorkBuddy 成长中心** 的全部自动化：**Token 自动续期 → 积分/用量/成长查询 → 18 项成长任务 → 8 项互动玩法 → 自动领奖**，全流程无人值守，重复运行只补缺口、不重复领取。
 
 > 🎯 一句话：**配一个刷新令牌，剩下交给它。**
+>
+> 📦 **单文件自包含**：无需任何配套模块（专家市场数据、推送通知全部内置），青龙上传一个 `workbuddy_daily.py` 即可运行。
 
 ---
 
@@ -38,6 +41,26 @@ pip3 install requests
 
 ---
 
+## 🔑 如何获取变量值（首次必看）
+
+> 从桌面端认证文件中取 `AT` 和 `RT`，拼成 `手机号:AT:RT`。
+
+1. **安装并登录** WorkBuddy 桌面端
+2. 用记事本打开下面这个文件（`AppData` 是隐藏文件夹，地址栏直接粘贴路径）：
+   ```
+   C:/Users/你的用户名/AppData/Local/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info
+   ```
+3. 在文件里搜索 `accessToken` 和 `refreshToken`，各自后面跟一串 **`eyJ` 开头**的长字符串，那就是 **AT** 和 **RT**
+4. 按格式拼一行，多账号写多行：
+   ```
+   1XXXXXXXXXX:eyJhbGciOiJSUzI1NiIs...很长...:eyJhbGciOiJIUzUxMiIs...也很长...
+   ```
+
+> ⚠️ AT 和 RT 之间用**英文冒号 `:`** 分隔；等号后面的引号不要带
+> ⚠️ **RT 是你唯一的续期凭据，泄露了别人就能操作你的账号**
+
+---
+
 ## ⌨️ 命令行参数
 
 ```bash
@@ -50,12 +73,12 @@ python workbuddy_daily.py --only 3       # 只跑第 3 个账号
 
 ---
 
-## 🔑 环境变量
+## 🔧 环境变量
 
 | 变量 | 必填 | 说明 |
 | :--- | :---: | :--- |
 | `WORKBUDDY_REFRESH_TOKEN` | ✅ | 多账号刷新令牌，换行分隔，格式 `手机号:AT:RT`（AT 可留空）。首次运行自动生成 `wb_refresh_tokens.json` 并持续维护 |
-| `PUSHPLUS_TOKEN` | ⬜ | 可选，运行结果推送到微信 |
+| `PUSHPLUS_TOKEN` | ⬜ | 可选，内置 PushPlus 推送，运行结果推到微信 |
 
 ---
 
@@ -86,6 +109,9 @@ python workbuddy_daily.py --only 3       # 只跑第 3 个账号
 
 ## ⚙️ 特别之处
 
+- **📦 单文件自包含**：专家市场数据、PushPlus 推送全部内置，**无需任何外部模块**，部署零负担
+- **🏪 内置专家市场**：直接拉取专家团 / 普通专家 / 模板场景，网络异常时自动使用内置兜底数据
+- **📊 结构化报告**：每账号一行摘要 + 总计 + 待办分布，推送一目了然不截断
 - **🔄 续期节奏**：距上次刷新 > 10 天 或 AT 7 天内过期 → 自动刷新（离线会话 30 天失效）
 - **♻️ RT 轮换**：每次刷新都会换发新令牌并立即保存，形成**永续循环**
 - **🖥️ 桌面换血**：自动备份并切换桌面端认证文件，跑完还原，全程无需人工
@@ -95,20 +121,23 @@ python workbuddy_daily.py --only 3       # 只跑第 3 个账号
 
 ---
 
-## 📊 运行输出示例
+## 📊 推送报告示例
 
 ```
-╔════════════════════════════════════════╗
-║ 🌱 WorkBuddy 全能脚本                  ║
-║ 🔐续期 💰积分 📊用量 🌱成长            ║
-║ ✅任务 🎮玩法 🎁领奖 📢推送            ║
-╚════════════════════════════════════════╝
-👥 账号数: 1
-[07:00:01][账号1] 🔑 token已自动续期(新有效期90天)
-[07:00:03][账号1] 💰 积分: 余980/总1000(已用20)
-[07:00:05][账号1] ✅签到成功 +10积分 连签7天
-[07:00:12][账号1] 🎰抽奖: 5积分、盲盒券
-🏁 完成16/18 等级3 剩余: skill_1, RichMeow_Chat
+🌱 WorkBuddy 签到报告
+
+📋 账号概览 (2个)
+
+👤 账号1  等级3  完成16/18｜待办:2项
+👤 账号2  等级5  完成18/18｜✅全清
+
+🏆 总计: 34/36 项已完成
+
+📌 待办分布:
+  · RichMeow_Chat ×1
+  · skill_1 ×1
+
+🕐 2026-09-12 07:05
 ```
 
 ---
@@ -117,8 +146,9 @@ python workbuddy_daily.py --only 3       # 只跑第 3 个账号
 
 ```
 WorkBuddy-Daily/
-├── workbuddy_daily.py      # 主脚本
-├── requirements.txt        # 依赖
+├── workbuddy_daily.py      # 主脚本（单文件自包含）
+├── requirements.txt        # 依赖（仅 requests）
+├── .gitignore              # 屏蔽凭据/运行数据
 ├── LICENSE                 # MIT 许可证
 └── README.md
 ```
