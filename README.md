@@ -80,6 +80,40 @@ Actions → 左侧选 **🌱 WorkBuddy Daily** → **Run workflow** → 选 `mai
 
 ---
 
+## 🔐 登录工具：短信验证码获取 Token
+
+> 没有 AT/RT？用这个工具**一条命令**拿到。
+
+```bash
+python workbuddy_login.py                    # 交互式登录（推荐）
+python workbuddy_login.py 13800000000        # 指定手机号
+python workbuddy_login.py 13800000000 123456 # 指定手机号+验证码（跳过等待）
+```
+
+**流程**：输入手机号 → 自动发送短信验证码 → 输入收到的验证码 → 自动完成 Keycloak 授权流程 → 输出 `手机号:AT:RT`。
+
+```
+[1/5] 获取登录页面...
+  ✅ 登录页获取成功 (会话: abc123...)
+[2/5] 发送短信验证码到 138****0000 ...
+  ✅ 验证码已发送 (有效期 300 秒)
+  📱 请输入收到的验证码: ******
+[3/5] 提交登录...
+[4/5] 交换 Token...
+  ✅ 登录成功! 身份: 138****0000 | AT过期: 2026-12-11 08:30
+[5/5] 生成环境变量...
+════════════════════════════════════════════════════════════
+✅ 登录成功！将下面的值追加到 WORKBUDDY_REFRESH_TOKEN 变量
+════════════════════════════════════════════════════════════
+13800000000:eyJhbGciOiJSUzI1NiIs...很长...:eyJhbGciOiJIUzUxMiIs...也很长...
+════════════════════════════════════════════════════════════
+```
+
+**输出**：结果同时保存到 `wb_login_result.json`（已被 `.gitignore` 屏蔽，不会提交）。
+
+> 💡 拿到这行 `手机号:AT:RT` 后，直接粘贴到青龙的 `WORKBUDDY_REFRESH_TOKEN` 变量或 GitHub Secrets 即可，主脚本会自动续期、永不过期。
+
+---
 ## 🔑 如何获取变量值（首次必看）
 
 > 从桌面端认证文件中取 `AT` 和 `RT`，拼成 `手机号:AT:RT`。
@@ -193,11 +227,12 @@ python workbuddy_daily.py --only 3       # 只跑第 3 个账号
 WorkBuddy-Daily/
 ├── .github/
 │   └── workflows/
-│       └── workbuddy.yml   # GitHub Actions 定时工作流
-├── workbuddy_daily.py      # 主脚本（单文件自包含）
-├── requirements.txt        # 依赖（仅 requests）
-├── .gitignore              # 屏蔽凭据/运行数据
-├── LICENSE                 # MIT 许可证
+│       └── workbuddy.yml    # GitHub Actions 定时工作流
+├── workbuddy_daily.py       # 主脚本（签到/任务/玩法，单文件自包含）
+├── workbuddy_login.py       # 登录工具（短信验证码换 Token）
+├── requirements.txt         # 依赖（仅 requests）
+├── .gitignore               # 屏蔽凭据/运行数据
+├── LICENSE                  # MIT 许可证
 └── README.md
 ```
 
@@ -218,4 +253,5 @@ WorkBuddy-Daily/
 <div align="center">
   <sub>🌱 如果这个脚本帮到你，点个 <b>Star</b> 支持一下 ✨</sub>
 </div>
+
 
