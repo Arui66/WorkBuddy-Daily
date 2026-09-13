@@ -71,7 +71,6 @@
    · 新增账号：变量值末尾追加一行 "手机号:AT:RT" 即可，下次运行自动并入
 
 📄 依赖：requests（pip3 install requests）
-   脚本完全自包含，无需其他文件
 
 🔒 隐私说明
    脚本不含任何账号、手机号、Token 或设备信息，所有凭据均由环境变量注入。
@@ -91,6 +90,34 @@ except Exception:
 
 BASE = "https://www.workbuddy.cn"
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) WorkBuddy/5.5.4 Chrome/138.0.7204.251 Electron/37.10.3 Safari/537.36"
+
+# ---------- 任务代码 → 中文名映射 ----------
+TASK_NAME_CN = {
+    "create_canvas": "设计创意模式",
+    "playbook_prompt": "探索优秀灵感",
+    "RichMeow_Chat": "桌面端对话",
+    "Library_read": "体验资料库",
+    "Expert_lighthouse": "腾讯轻量云专家",
+    "Expert_Philanthropy": "公益专家",
+    "Hp_Appearance": "和平精英主题",
+    "Buddy_App": "发现应用",
+    "Buddy_App_QQ": "企鹅教师助手",
+    "Model_chat_GLM5.2": "GLM-5.2模型对话",
+    "black_cat": "夜猫子活动",
+    "Expert_team_use_3": "召唤3次专家团",
+    "first_buddy": "领取Buddy",
+    "chat_5": "和AI聊天5次",
+    "skill_1": "尝鲜热门技能",
+    "expert_5": "召唤5次专家",
+    "template_5": "使用5个模板",
+    "automation_1": "设置自动化任务",
+    "workstation_expert": "工作台搭建师",
+}
+
+def task_cn(code):
+    return TASK_NAME_CN.get(code, code)
+
+
 QQ_TPL = "cb_y5Dy46tPQGGWtueMxXbe"          # 企鹅教师助手模板
 
 
@@ -522,14 +549,19 @@ def queryCredits(s):
         pkgs = r.get("data", {}).get("Packages", [])
         paid = r.get("data", {}).get("IsPaidUser")
         out = []
-        for p in pkgs:
-            out.append("余%s/总%s(已用%s %s)" % (p.get("CycleRemainCapacity", "?").rstrip("0").rstrip("."),
-                                               p.get("CycleTotalCapacity", "?"),
-                                               p.get("CycleUsedCapacity", "?").rstrip("0").rstrip("."),
-                                               p.get("CapacityUnit", "credits")))
-        return "; ".join(out) if out else "无套餐数据", paid
+        for i, p in enumerate(pkgs):
+            remain = p.get("CycleRemainCapacity", "0")
+            total = p.get("CycleTotalCapacity", "0")
+            used = p.get("CycleUsedCapacity", "0")
+            # 清理小数尾巴
+            remain = remain.rstrip("0").rstrip(".") if "." in remain else remain
+            used = used.rstrip("0").rstrip(".") if "." in used else used
+            total = total.rstrip("0").rstrip(".") if "." in total else total
+            pkg_name = "主套餐" if i == 0 else "加量包%d" % i
+            out.append("%s剩余%s积分(共%s,已用%s)" % (pkg_name, remain, total, used))
+        return ("；".join(out) if out else "暂无套餐"), paid
     except Exception as e:
-        return "查询失败:" + str(e)[:40], None
+        return "查询失败:" + str(e)[:40], False
 
 
 def queryUsage(s):
@@ -537,7 +569,7 @@ def queryUsage(s):
     try:
         r = s.post(BASE + "/billing/meter/get-user-resource", json={}, timeout=20, verify=False).json()
         resp = r.get("data", {}).get("Response", {}).get("Data", {}) or {}
-        return "资源%d项/总用量%s" % (resp.get("TotalCount", "?"), resp.get("TotalDosage", "?"))
+        return "共%d类资源，本月已使用%s次" % (resp.get("TotalCount", "?"), resp.get("TotalDosage", "?"))
     except Exception:
         return "用量数据延迟2-3小时"
 
@@ -1314,7 +1346,7 @@ def run_account(idx, acc, do_desktop):
     summary["usage"] = usage
     summary["streak"] = streak.get("days", "?")
     summary["signed"] = "✅" if "已签到" in (credits + "") or True else "❌"
-    log("💰 积分: %s%s" % (credits, " [付费]" if paid else ""))
+    log("💰 积分: %s" % credits)
     log("📊 用量: %s" % usage)
     try:
         hm = s.get(BASE + "/v2/activity/growth/heatmap", timeout=20, verify=False).json()
@@ -1371,7 +1403,7 @@ def run_account(idx, acc, do_desktop):
     # 终态
     st_all = s.get(BASE + "/v2/activity/growth/tasks", timeout=25, verify=False).json().get("data", {}).get("tasks", [])
     done = sum(1 for t in st_all if isinstance(t, dict) and t.get("accept_status") in ("claimed", "completed"))
-    rest = [t.get("task_code") for t in st_all if isinstance(t, dict) and t.get("accept_status") not in ("claimed", "completed")]
+    rest = [task_cn(t.get("task_code","")) for t in st_all if isinstance(t, dict) and t.get("accept_status") not in ("claimed", "completed")]
     prof2 = s.get(BASE + "/v2/activity/growth/profile", timeout=25, verify=False).json().get("data", {})
     summary.update({"done": done, "total": len(st_all), "rest": rest,
                     "level": prof2.get("level", "?"), "energy": energy})
@@ -1383,13 +1415,13 @@ def run_account(idx, acc, do_desktop):
 
 # ---------- 推送摘要（精简版，避免超长截断） ----------
 def build_summary(summaries):
-    """每个账号详细信息 + 总计统计，内容丰富但结构清晰"""
+    """每个账号详细中文报告 + 总计统计"""
     summaries.sort(key=lambda x: x.get("idx", 0))
     total_done = total_tasks = 0
-    total_credits = []
     lines = []
+    lines.append("📊 各账号运行报告")
+    lines.append("")
 
-    # ── 每个账号详情 ──
     for sm in summaries:
         idx = sm.get("idx", 0)
         done = sm.get("done", 0)
@@ -1401,20 +1433,36 @@ def build_summary(summaries):
         energy = sm.get("energy", "?")
         level = sm.get("level", "?")
         streak = sm.get("streak", "?")
+        note = sm.get("note", "")[:16]
         rest = sm.get("rest") or []
+        # 翻译任务代码为中文
+        rest_cn = [task_cn(r) for r in rest]
 
-        lines.append("┌─ 👤 账号%d  %s" % (idx, sm.get("note", "")[:16]))
-        lines.append("│ 💰 %s" % (credits[:60] if credits else "无"))
-        lines.append("│ 📊 %s" % (usage[:50] if usage else "无"))
-        lines.append("│ 🌱 等级%s  连签%s天  能量%s" % (level, streak, energy))
-        lines.append("│ ✅ 任务: %d/%d  剩余: %s" % (done, total,
-                     ", ".join(rest) if rest else "无"))
-        lines.append("└─────────────────────────")
+        lines.append("👤 账号%d  %s" % (idx, note))
+        lines.append("   💰 %s" % (credits if credits else "暂无数据"))
+        lines.append("   📊 %s" % (usage if usage else "暂无数据"))
+        lines.append("   🌱 等级%s | 连签%s天 | 能量%s" % (level, streak, energy))
+        if rest_cn:
+            lines.append("   ⏳ 未完成: %s" % "、".join(rest_cn))
+        else:
+            lines.append("   ✅ 全部完成！")
         lines.append("")
 
-    # ── 汇总 ──
-    lines.append("📊 ══ 汇总 ══")
-    lines.append("👥 账号: %d个  ✅ 任务: %d/%d 已完成" % (len(summaries), total_done, total_tasks))
+    lines.append("📊 ══ 总计 ══")
+    lines.append("👥 共%d个账号，任务完成 %d/%d 项" % (len(summaries), total_done, total_tasks))
+
+    # 汇总待办分布（中文）
+    all_rest = {}
+    for sm in summaries:
+        for r in (sm.get("rest") or []):
+            cn = task_cn(r)
+            all_rest[cn] = all_rest.get(cn, 0) + 1
+    if all_rest:
+        lines.append("")
+        for cn, cnt in sorted(all_rest.items(), key=lambda x: -x[1]):
+            lines.append("   · %s（%d个账号待完成）" % (cn, cnt))
+
+    lines.append("")
     lines.append("🕐 %s" % time.strftime("%Y-%m-%d %H:%M"))
     return chr(10).join(lines)
 
