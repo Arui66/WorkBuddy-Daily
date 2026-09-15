@@ -403,16 +403,20 @@ def auto_refresh():
 
 def load_accounts():
     auto_refresh()  # 依据 RT 变量/json 续期，并同步 token 文件
-    env = ""
-    if os.path.exists(TOKEN_FILE):  # 本地文件优先(续期后最新)
-        env = open(TOKEN_FILE, encoding="utf-8").read().strip()
-    if not env and os.path.exists(REFRESH_STORE):
-        # 回落到续期池：只设 WORKBUDDY_REFRESH_TOKEN 时也能启动
+    # 续期池优先：与变量实时同步、以手机号为名；本地 token 文件仅作回退
+    # (否则新加账号在下次续期前会被旧 token 文件吞掉)
+    if os.path.exists(REFRESH_STORE):
         try:
             store = json.load(open(REFRESH_STORE, encoding="utf-8"))
-            env = "\n".join(v.get("access_token", "") for v in store.values() if v.get("access_token"))
+            accs = [{"note": user, "access_token": v.get("access_token", "")}
+                    for user, v in store.items() if v.get("access_token")]
+            if accs:
+                return accs
         except Exception:
             pass
+    env = ""
+    if os.path.exists(TOKEN_FILE):  # 回退：本地文件(续期后最新)
+        env = open(TOKEN_FILE, encoding="utf-8").read().strip()
     if env:
         items = [x.strip() for x in env.replace("@", "\n").splitlines() if x.strip()]
         return [{"note": "账号%d" % (i + 1), "access_token": t}
@@ -931,7 +935,13 @@ def t_badges(s, uid, nick, log):
 
 
 # ---------- 桌面端换血任务（RichMeow / skill_1） ----------
-INFO_PATH = os.path.join(os.path.expanduser("~"), "AppData", "Local", "CodeBuddyExtension", "Data", "Public", "auth", "workbuddy-desktop.info")
+# 2026-09 桌面端升级为 -ai 变体：认证文件与数据目录都换了名字
+_INFO_DIR = os.path.join(os.path.expanduser("~"), "AppData", "Local", "CodeBuddyExtension", "Data", "Public", "auth")
+INFO_PATH = os.path.join(_INFO_DIR, "workbuddy-desktop-ai.info")
+if not os.path.exists(INFO_PATH):  # 旧版桌面端回落
+    INFO_PATH = os.path.join(_INFO_DIR, "workbuddy-desktop.info")
+SESSION_DIRS = [os.path.join(os.path.expanduser("~"), ".workbuddy-ai", "sessions"),
+                os.path.join(os.path.expanduser("~"), ".workbuddy", "sessions")]
 
 
 def swap_info(tok):
@@ -1079,22 +1089,25 @@ def daemon_chat(prompt, blocks=None, meta_extra=None, deadline=280):
 def restart_desktop():
     subprocess.run(["taskkill", "/F", "/IM", "WorkBuddy.exe"], capture_output=True)
     time.sleep(3)
-    for f in _glob.glob(os.path.join(os.path.expanduser("~"), ".workbuddy", "sessions", "*.json")):
-        try:
-            os.remove(f)
-        except Exception:
-            pass
+    for d_ in SESSION_DIRS:
+        for f in _glob.glob(os.path.join(d_, "*.json")):
+            try:
+                os.remove(f)
+            except Exception:
+                pass
     subprocess.Popen(["cmd", "/c", "start", "", r"C:\Program Files\WorkBuddy\WorkBuddy.exe", "--remote-debugging-port=9222"],
                      creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0)
-    # 等守护进程会话出现
+    # 等守护进程会话出现（新版 .workbuddy-ai/sessions，updatedAt 可能是字符串）
     for _ in range(20):
         time.sleep(3)
-        fs = sorted(_glob.glob(os.path.join(os.path.expanduser("~"), ".workbuddy", "sessions", "*.json")),
-                    key=os.path.getmtime, reverse=True)
+        fs = []
+        for d_ in SESSION_DIRS:
+            fs += _glob.glob(os.path.join(d_, "*.json"))
+        fs = sorted(fs, key=os.path.getmtime, reverse=True)
         for f in fs[:3]:
             try:
                 d = json.load(open(f, encoding="utf-8"))
-                if time.time() * 1000 - d.get("updatedAt", 0) < 60000 and d.get("url"):
+                if time.time() * 1000 - int(d.get("updatedAt") or 0) < 60000 and d.get("url"):
                     return d["url"]
             except Exception:
                 pass
