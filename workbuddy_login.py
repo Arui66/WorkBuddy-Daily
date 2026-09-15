@@ -61,6 +61,11 @@ def send_sms(phone):
         return True, ""
     msg = d.get("msg", "未知错误")
     print("  ❌ 发送失败: %s" % msg)
+    low = str(msg).lower()
+    if "keycloak spi" in low or "400" in low:
+        print("  💡 手机号可能格式有误，或该号码暂不支持短信登录")
+    elif "频繁" in str(msg) or "frequent" in low or "too many" in low:
+        print("  💡 发送过于频繁，请稍后再试")
     return False, msg
 
 
@@ -164,6 +169,8 @@ def main():
 
     if do_verify:
         verify_rt(rt)
+    else:
+        print("[5/5] 完成!")
 
     env_line = "%s:%s:%s" % (phone, at, rt)
     print("\n" + "═" * 60)
