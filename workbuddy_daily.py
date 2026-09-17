@@ -600,6 +600,12 @@ def t_accept_all(s, uid, nick, log):
             if isinstance(t, dict) and t.get("accept_status") == "not_accepted"]
     if todo:
         r2 = s.post(BASE + "/v2/activity/growth/tasks/accept", json={"task_codes": todo}, timeout=20, verify=False)
+        try:
+            if r2.json().get("code") != 0:
+                log("   📋接受任务失败，继续执行已有状态")
+                return
+        except Exception:
+            pass
         log("   📋已接受任务: %s" % ",".join(todo))
         for attempt in range(8):
             time.sleep(2)
