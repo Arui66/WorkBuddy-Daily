@@ -409,8 +409,11 @@ def load_accounts():
         try:
             store = json.load(open(REFRESH_STORE, encoding="utf-8"))
             accs = [{"note": user, "access_token": v.get("access_token", "")}
-                    for user, v in store.items() if v.get("access_token")]
+                    for user, v in store.items()]
             if accs:
+                no_at = [a["note"] for a in accs if not a["access_token"]]
+                if no_at:
+                    print("⚠️ 以下账号无 AT（续期可能失败），仍会尝试执行: %s" % ", ".join(no_at))
                 return accs
         except Exception:
             pass
@@ -596,8 +599,20 @@ def t_accept_all(s, uid, nick, log):
     todo = [t.get("task_code") for t in r.get("data", {}).get("tasks", [])
             if isinstance(t, dict) and t.get("accept_status") == "not_accepted"]
     if todo:
-        s.post(BASE + "/v2/activity/growth/tasks/accept", json={"task_codes": todo}, timeout=20, verify=False)
+        r2 = s.post(BASE + "/v2/activity/growth/tasks/accept", json={"task_codes": todo}, timeout=20, verify=False)
         log("   📋已接受任务: %s" % ",".join(todo))
+        for attempt in range(8):
+            time.sleep(2)
+            st = s.get(BASE + "/v2/activity/growth/tasks", timeout=25, verify=False).json()
+            still = [t.get("task_code") for t in st.get("data", {}).get("tasks", [])
+                     if isinstance(t, dict) and t.get("task_code") in todo
+                     and t.get("accept_status") == "not_accepted"]
+            if not still:
+                log("   ✅ 任务状态已同步（等待 %d 秒）" % ((attempt + 1) * 2))
+                return
+            if attempt < 7:
+                log("   ⏳ 还有 %d 个任务待同步（第 %d 次检查）..." % (len(still), attempt + 1))
+        log("   ⚠️ 等待 15 秒后仍未同步: %s" % ",".join(still))
 
 
 def t_team_3(s, uid, nick, log):
@@ -1332,7 +1347,13 @@ def t_unknown_tasks(s, uid, nick, log):
 
 # ---------- 单账号全流程 ----------
 def run_account(idx, acc, do_desktop):
-    tok = acc["access_token"]
+    tok = acc.get("access_token", "")
+    if not tok:
+        log("")
+        log("╭─ 👤 账号%d  %s" % (idx, acc.get("note", "")))
+        log("  ❌ AT 为空（续期失败或凭据缺失），跳过此账号")
+        return msgs, {"idx": idx, "note": acc.get("note", ""), "done": 0, "total": 0,
+                      "rest": ["凭据缺失"], "level": "?", "energy": "?"}
     uid = uid_of(tok)
     nick = nickname_of(tok)
     s = new_api(tok)
