@@ -1456,6 +1456,9 @@ def t_workstation(s, uid, nick, log, tok):
     st, cur, tgt = prog(s, "workstation_expert")
     if st in ("completed", "claimed") or st is None:
         return
+    if sys.platform != "win32":
+        log("   工作台搭建师: 非Windows，跳过桌面流程")
+        return
     log("   检测到工作台搭建师任务，尝试桌面换血对话...")
     # 桌面换血对话（复用 desktop 流程）
     swap_info(tok)
@@ -2016,30 +2019,18 @@ def _accept_with_verify(s, code, log):
     return False
 
 
-def _accept_with_verify(s, code, log):
-    """accept 并验证登记生效（读 results[].status + 回读 accept_status）。"""
-    for attempt in (1, 2):
-        r = s.post(BASE + "/v2/activity/growth/tasks/accept", json={"task_codes": [code]},
-                   timeout=20, verify=False)
-        status = ""
-        try:
-            d = r.json()
-            results = (d.get("data") or {}).get("results") or []
-            status = (results[0].get("status") or "") if results else (d.get("msg") or "")
-        except Exception:
-            pass
-        t = prog(s, code)
-        ast = t[0] if t else "not_accepted"
-        ok = (r.status_code == 200 and status == "accepted" and ast != "not_accepted")
-        log("   accept %s 尝试%d status=%s 回读=%s%s" % (code, attempt, status, ast, " → 生效" if ok else ""))
-        if ok:
-            return True
-        time.sleep(WRITE_GAP)
-    return False
-
-
 # ---------- 单账号全流程 ----------
 def run_account(idx, acc, do_desktop):
+    msgs = []
+    tag = "账号%d" % idx
+    def log(m):
+        ts = time.strftime("%H:%M:%S")
+        line = "[%s][%s] %s" % (ts, tag, m)
+        print(line)
+        msgs.append(line)
+
+    summary = {"idx": idx, "note": acc.get("note", ""), "credits": "", "usage": "", "growth": "",
+               "done": 0, "total": 0, "rest": [], "level": "?", "energy": "?"}
     tok = acc.get("access_token", "")
     if not tok:
         log("")
@@ -2050,16 +2041,6 @@ def run_account(idx, acc, do_desktop):
     uid = uid_of(tok)
     nick = nickname_of(tok)
     s = new_api(tok)
-    msgs = []
-    summary = {"idx": idx, "note": acc.get("note", ""), "credits": "", "usage": "", "growth": "",
-               "done": 0, "total": 0, "rest": [], "level": "?", "energy": "?"}
-
-    tag = "账号%d" % idx
-    def log(m):
-        ts = time.strftime("%H:%M:%S")
-        line = "[%s][%s] %s" % (ts, tag, m)
-        print(line)
-        msgs.append(line)
 
     log("")
     log("╭─ 👤 账号%d  %s" % (idx, acc.get("note", "")))
