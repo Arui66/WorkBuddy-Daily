@@ -456,9 +456,11 @@ if "--gap" in sys.argv:
 # ---------- 基础 ----------
 def new_api(tok):
     s = requests.Session(); s.trust_env = False
+    _uid = uid_of(tok)
     s.headers.update({"Authorization": "Bearer " + tok, "Content-Type": "application/json",
                       "Accept": "application/json, text/plain, */*", "Origin": BASE,
-                      "Referer": BASE + "/profile/growth-center", "User-Agent": UA})
+                      "Referer": BASE + "/profile/growth-center", "User-Agent": UA,
+                      "X-User-Id": _uid})
     return s
 
 
@@ -546,11 +548,19 @@ def claim(s, code, log):
 def report(s, uid, nick, events):
     """events: list of dict；自动补全信封"""
     UA_SHORT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 WorkBuddy/5.5.4"
+    mid = derive_id(uid, "machine")   # 稳定指纹：同账号每次相同
     out = []
     for e in events:
-        env = {"timestamp": int(time.time() * 1000), "reportDelay": 0, "userId": uid, "userNickname": nick,
-               "ideName": "web-Agents", "ideType": "web-Agents", "machineId": str(uuid.uuid4()),
-               "mode": "CLOUD", "userAgent": UA_SHORT, "os": "Win32", "timezone": "Asia/Shanghai"}
+        env = {"timestamp": int(time.time() * 1000), "reportDelay": 0,
+               "userId": uid, "userNickname": nick,
+               "ideName": "WorkBuddy", "ideType": "WorkBuddy", "ideVersion": "5.5.6",
+               "machineId": mid, "sessionId": derive_id(uid, "session"),
+               "mode": "CLOUD", "userAgent": UA_SHORT, "os": "Win32", "arch": "x64",
+               "osVersion": "10.0.26220", "timezone": "Asia/Shanghai",
+               "product": "SaaS", "releaseDate": 1789036585355,
+               "commit": "5f9692923c93033111c51ad7b003eb80204a9b75",
+               "extName": "workbuddy-desktop", "extVersion": "5.5.6",
+               "cpuCores": 20, "memorySize": 24}
         env.update(e)
         out.append(env)
     try:
@@ -818,9 +828,10 @@ def t_expert_5(s, uid, nick, log):
             {"eventCode": "expert_summoned", "id": e["id"], "name": e["name"], "type": "agent",
              "expertTitle": e.get("profession", ""), "expertType": "agent"},
             {"eventCode": "expert_actual_use", "id": e["id"], "name": e["name"], "type": e.get("industryId", "") or "",
-             "expertType": "agent", "source": "builtin", "version": "", "cost": 5, "characterCount": 30,
-             "requestId": str(uuid.uuid4()), "messageId": "cmb-" + str(uuid.uuid4()),
-             "requestModelId": "glm-5.2", "requestModelName": "GLM-5.2"}])
+             "expertType": "agent", "source": "builtin", "version": "", "cost": 0, "characterCount": 12,
+             "conversationId": "conv-" + str(uuid.uuid4()), "requestId": str(uuid.uuid4()),
+             "messageId": "msg-" + str(uuid.uuid4()),
+             "requestModelId": "deepseek-v4-flash", "requestModelName": "DeepSeek V4 Flash"}])
         time.sleep(3)
     st, cur, tgt = prog(s, "expert_5")
     log("   召唤5次专家: %s %s/%s" % (st, cur, tgt))
