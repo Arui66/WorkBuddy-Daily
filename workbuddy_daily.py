@@ -605,7 +605,7 @@ def chat_request_events(uid, nick, conv_id, prompt, txt):
     now = int(time.time() * 1000)
     rid = "cmb-" + str(uuid.uuid4())
     common = {"userId": uid, "userNickname": nick, "ideName": "web-Agents", "ideType": "web-Agents",
-              "machineId": str(uuid.uuid4()), "mode": "CLOUD", "userAgent": UA, "os": "Win32",
+              "machineId": derive_id(uid, "machine"), "mode": "CLOUD", "userAgent": UA, "os": "Win32",
               "timezone": "Asia/Shanghai"}
     return [
         {"eventCode": "chat_request_send", "timestamp": now, "reportDelay": 0, **common,
@@ -1625,7 +1625,7 @@ def _school_post(s, url, body=None):
 def _school_report(s, uid, nick, events):
     """向 codebuddy.cn/v2/report 上报开学季事件（带 activityId）。"""
     out = {"common": {"userId": uid, "userNickname": nick, "ideName": "web-Agents",
-                      "ideType": "web-Agents", "machineId": str(uuid.uuid4()), "mode": "CLOUD",
+                      "ideType": "web-Agents", "machineId": derive_id(uid, "machine"), "mode": "CLOUD",
                       "userAgent": MP_UA, "os": "Android", "timezone": "Asia/Shanghai"},
            "events": events}
     return api_retry(s, "POST", SCHOOL_DOMAIN + "/v2/report", body=out)
@@ -1652,7 +1652,7 @@ def _school_fetch_expert(s):
 def _school_mini_chat_event(uid, nick, conv_id):
     rid = str(uuid.uuid4())
     return {"common": {"userId": uid, "userNickname": nick, "ideName": "web-Agents",
-                       "ideType": "web-Agents", "machineId": str(uuid.uuid4()), "mode": "CLOUD",
+                       "ideType": "web-Agents", "machineId": derive_id(uid, "machine"), "mode": "CLOUD",
                        "userAgent": MP_UA, "os": "Android", "timezone": "Asia/Shanghai"},
             "events": [{"eventCode": "chat_request_send", "timestamp": int(time.time() * 1000),
                         "activityId": SCHOOL_ACTIVITY_ID, "conversationId": conv_id,
@@ -1682,7 +1682,7 @@ def _school_desktop_seq_event(uid, nick, conv_id):
 def _school_expert_event(uid, nick, expert_id, expert_name, conv_id):
     rid = str(uuid.uuid4()); mid_msg = "msg-" + rid
     return {"common": {"userId": uid, "userNickname": nick, "ideName": "web-Agents",
-                       "ideType": "web-Agents", "machineId": str(uuid.uuid4()), "mode": "CLOUD",
+                       "ideType": "web-Agents", "machineId": derive_id(uid, "machine"), "mode": "CLOUD",
                        "userAgent": MP_UA, "os": "Android", "timezone": "Asia/Shanghai"},
             "events": [{"eventCode": "expert_summoned", "id": expert_id, "name": expert_name,
                         "type": "agent", "source": "builtin", "timestamp": int(time.time() * 1000),
