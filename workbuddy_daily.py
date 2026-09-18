@@ -441,6 +441,7 @@ ACCOUNTS = load_accounts()
 ONLY = int(sys.argv[sys.argv.index("--only") + 1]) - 1 if "--only" in sys.argv else None
 if ONLY is not None:
     ACCOUNTS = [ACCOUNTS[ONLY]]
+WRITE_GAP = 1.5  # 写动作间隔秒数（--gap 可覆盖，最低 1.0）
 QUERY_ONLY = "--query" in sys.argv
 NO_DESKTOP = "--no-desktop" in sys.argv
 NO_SCHOOL = "--no-school" in sys.argv
@@ -458,9 +459,6 @@ def new_api(tok):
                       "Accept": "application/json, text/plain, */*", "Origin": BASE,
                       "Referer": BASE + "/profile/growth-center", "User-Agent": UA})
     return s
-
-
-WRITE_GAP = 1.5  # 写动作间隔秒数（--gap 可覆盖，最低 1.0）
 
 
 def api_retry(s, method, url, body=None, retries=3, gap=1.0, **kw):
@@ -1905,9 +1903,12 @@ def main():
             uid = uid_of(tok); nick = nickname_of(tok)
             s2 = _school_session(tok)
             print("╭─ 👤 账号%d  %s [school-only]" % (i + 1, acc.get("note", "")))
+            _tag = "账号%d" % (i + 1)
+            def _slog(m, _tag=_tag):
+                print("[%s][%s] %s" % (time.strftime("%H:%M:%S"), _tag, m))
             try:
-                school_run_tasks(s2, uid, nick, lambda m: print(m))
-                school_lottery(s2, uid, nick, lambda m: print(m))
+                school_run_tasks(s2, uid, nick, _slog)
+                school_lottery(s2, uid, nick, _slog)
             except Exception as e:
                 print("  ❌ 开学季异常: %s" % str(e)[:80])
             time.sleep(WRITE_GAP)
