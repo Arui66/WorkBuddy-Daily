@@ -1848,12 +1848,11 @@ def build_summary(summaries):
 
 # ---------- 推送通知（内置 PushPlus + Bark，无需外部模块） ----------
 def _bark_notify(title, content):
-    """Bark 推送（iOS）；未配置 BARK_URL 则跳过。"""
+    """Bark 推送（iOS）；未配置 BARK_URL 则跳过。直接 POST 到 BARK_URL（/:device_key 路由），
+    不加 /push 后缀——bark-server 会把 URL 路径第二段解析为 body 参数覆盖 JSON。"""
     url = os.environ.get("BARK_URL", "").strip().rstrip("/")
     if not url:
         return False
-    if not url.endswith("/push"):
-        url += "/push"
     try:
         s = requests.Session(); s.trust_env = False
         r = s.post(url, json={"title": title, "body": content, "group": "WorkBuddy"},
