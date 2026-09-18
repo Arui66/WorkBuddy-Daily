@@ -179,12 +179,13 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 </details>
 
 <details>
-<summary><b>🖥️ 桌面任务（2 项 · 需 Windows 桌面端，每号一次即永久有效）</b></summary>
+<summary><b>🖥️ 桌面任务（2 项 · Windows 优先，非 Windows 自动降级指纹上报）</b></summary>
 
 桌面端对话 1 次 · 尝鲜热门技能
 
-> 💡 桌面任务需 Windows 桌面端环境（青龙 / GitHub Actions 均为 Linux，会自动跳过）。
-> 🛠️ 当活动出现「工作台搭建师」任务时，脚本也会自动尝试（同样需桌面端）。
+> 💡 **Windows**：走真实桌面换血流程（swap_info + daemon_chat），效果最佳。
+> 💡 **Linux / 青龙 / GitHub Actions**：自动降级为指纹上报模式（`desktop_chat_sequence` 6 连事件 + `skill_info`），**无需真实桌面端**，效果等同。
+> 🛠️ 当活动出现「工作台搭建师」任务时，脚本也会自动尝试（Windows 走桌面，非 Windows 走指纹）。
 
 </details>
 
