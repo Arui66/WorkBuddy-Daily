@@ -174,7 +174,7 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 <details open>
 <summary><b>☁️ 云端任务（14 项 · 纯 API）</b></summary>
 
-设计创意模式 · 探索优秀灵感 · 召唤 3 次专家团 · 发现应用 · 企鹅教师助手 · 和平精英主题 · 体验资料库 · 设置自动化任务 · 召唤 5 次专家 · 使用 5 个模板 · GLM-5.2 模型对话 · 和 AI 聊天 5 次 · 夜猫子活动 · 领取 Buddy
+设计创意模式 · 探索优秀灵感 · 召唤 3 次专家团 · 发现应用 · 企鹅教师助手 · 和平精英主题 · 体验资料库 · 设置自动化任务 · 召唤 5 次专家 · 使用 5 个模板 · GLM-5.2 模型对话 · 和 AI 聊天 5 次 · 夜猫子活动 · 领取 Buddy · 腾讯轻量云专家
 
 </details>
 
@@ -211,6 +211,7 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 <summary><b>🔹 其他</b></summary>
 
 每日签到（独立于成长任务的 billing 签到，自动完成）
+小程序成长任务：Sequential_Tasks_1（+100c+5e）· school_season 校园日（+100c+5e）
 
 </details>
 
