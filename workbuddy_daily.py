@@ -38,7 +38,8 @@
 
 🔑 环境变量
    WORKBUDDY_REFRESH_TOKEN   【必填】多账号刷新令牌，换行分隔
-   PUSHPLUS_TOKEN            【可选】推送通知
+   PUSHPLUS_TOKEN            【可选】PushPlus 推送（微信）
+   BARK_URL                  【可选】Bark 推送（iOS），如 https://api.day.app/xxxxxxxx
 
 获取变量值（首次必看）
    第一步：在电脑上安装并登录 WorkBuddy 桌面端
@@ -1845,7 +1846,28 @@ def build_summary(summaries):
     return chr(10).join(lines)
 
 
-# ---------- 推送通知（内置 PushPlus，无需外部模块） ----------
+# ---------- 推送通知（内置 PushPlus + Bark，无需外部模块） ----------
+def _bark_notify(title, content):
+    """Bark 推送（iOS）；未配置 BARK_URL 则跳过。"""
+    url = os.environ.get("BARK_URL", "").strip().rstrip("/")
+    if not url:
+        return False
+    if not url.endswith("/push"):
+        url += "/push"
+    try:
+        s = requests.Session(); s.trust_env = False
+        r = s.post(url, json={"title": title, "body": content, "group": "WorkBuddy"},
+                   timeout=20, verify=False)
+        d = r.json()
+        if d.get("code") == 200:
+            print("📢 Bark 推送成功")
+            return True
+        print("📢 Bark 推送失败: %s" % str(d.get("message", ""))[:80])
+    except Exception as e:
+        print("📢 Bark 异常: %s" % str(e)[:80])
+    return False
+
+
 def send_notify(title, content):
     """PushPlus 推送；未配置 PUSHPLUS_TOKEN 则跳过"""
     token = os.environ.get("PUSHPLUS_TOKEN", "").strip()
@@ -1867,6 +1889,13 @@ def send_notify(title, content):
     except Exception as e:
         print("📢 推送异常: %s" % str(e)[:80])
     return False
+
+
+def send_notify_all(title, content):
+    """推送通知到所有已配置的渠道（PushPlus + Bark）。"""
+    r1 = send_notify(title, content)
+    r2 = _bark_notify(title, content)
+    return r1 or r2
 
 
 def main():
@@ -1928,7 +1957,7 @@ def main():
             summaries.append(sm)
             time.sleep(2)
     # 推送摘要（完整日志见青龙日志/控制台）
-    send_notify("🌱 WorkBuddy 签到报告", build_summary(summaries))
+    send_notify_all("🌱 WorkBuddy 签到报告", build_summary(summaries))
 
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
