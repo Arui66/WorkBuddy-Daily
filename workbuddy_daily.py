@@ -723,20 +723,20 @@ def t_team_3(s, uid, nick, log):
 
 
 def t_buddy_apps(s, uid, nick, log):
-    common1 = {"userId": uid, "userNickname": nick, "ideName": "web-Agents", "ideType": "web-Agents",
-               "machineId": str(uuid.uuid4()), "mode": "CLOUD", "userAgent": UA, "os": "Win32",
-               "timezone": "Asia/Shanghai"}
+    """发现应用/企鹅教师助手：desktop_buddy5_sequence + report_desktop_events"""
     for task in ("Buddy_App", "Buddy_App_QQ"):
         st, cur, tgt = prog(s, task)
         if st in ("completed", "claimed"):
             continue
-        now = int(time.time() * 1000)
-        report(s, uid, nick, [
-            {"eventCode": "buddyapp_discover_click", "timestamp": now},
-            {"eventCode": "buddyapp_enter_click", "timestamp": now + 60, "elementId": QQ_TPL,
-             "elementName": "企鹅教师助手", "position": "sidebar-switcher-trigger", "isFirstPage": "1"},
-            {"eventCode": "buddyapp_show", "timestamp": now + 120, "elementId": QQ_TPL, "elementName": "企鹅教师助手"}])
-        time.sleep(6)
+        buddy_id = QQ_TPL if "QQ" in task else "buddy-app-default"
+        buddy_name = "企鹅教师助手" if "QQ" in task else "发现应用"
+        evs = desktop_buddy5_sequence(uid, nick, buddy_id, buddy_name)
+        try:
+            report_desktop_events(s, uid, nick, evs)
+            log("   %s: buddyapp 五连 OK" % task)
+            time.sleep(WRITE_GAP)
+        except Exception as e:
+            log("   %s: buddyapp failed %s" % (task, str(e)[:60]))
     log("   发现应用/企鹅教师助手: %s / %s" % (prog(s, "Buddy_App")[0], prog(s, "Buddy_App_QQ")[0]))
 
 
@@ -759,9 +759,8 @@ def t_library(s, uid, nick, log):
     st, cur, tgt = prog(s, "Library_read")
     if st in ("completed", "claimed"):
         return
-    report(s, uid, nick, [{"eventCode": "web_element_click", "pageURL": LIB_DOC_URL,
-                           "elementId": "library_doc_intro_click", "elementName": "WorkBuddy资料库介绍",
-                           "enterpriseId": ""}])
+    report_web_event(s, uid, nick, "web_element_click", LIB_DOC_URL,
+                     "library_doc_intro_click", "WorkBuddy资料库介绍")
     time.sleep(6)
     log("   体验资料库: %s" % prog(s, "Library_read")[0])
 
@@ -782,12 +781,12 @@ def t_chat_n(s, uid, nick, log, code, n, prompts):
 
 
 def t_black_cat(s, uid, nick, log):
-    hour = time.localtime().tm_hour
     st, cur, tgt = prog(s, "black_cat")
     if st in ("completed", "claimed"):
         return
-    if not (hour >= 23 or hour < 8):
-        log("   夜猫子: 仅23:00-08:00计数，当前%d点，跳过" % hour)
+    if not within_night_window():
+        hour = time.localtime().tm_hour
+        log("   夜猫子: 仅23:00-08:00计数（CST），当前%d点，跳过" % hour)
         return
     need = (tgt or 3) - (cur or 0)
     for i in range(max(0, need)):
@@ -806,7 +805,11 @@ def t_expert_5(s, uid, nick, log):
     """召唤5次专家：普通专家遥测"""
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     experts = get_normal_experts(20)
-    for i in range(5):
+    st0, cur0, tgt0 = prog(s, "expert_5")
+    need = max(0, (tgt0 or 5) - (cur0 or 0))
+    if st0 in ("completed", "claimed"):
+        need = 0
+    for i in range(need):
         st, cur, tgt = prog(s, "expert_5")
         if st in ("completed", "claimed") or (cur or 0) >= (tgt or 5):
             break
@@ -1363,8 +1366,16 @@ def t_first_buddy(s, uid, nick, log):
     if st in ("completed", "claimed"):
         return
     try:
+        report(s, uid, nick, [{"eventCode": "buddy_agreement_view", "timestamp": int(time.time() * 1000)}])
+        time.sleep(2)
+        s.post(BASE + "/v2/activity/growth/buddy/agreement", json={"agree": True},
+               timeout=20, verify=False)
+        time.sleep(WRITE_GAP)
         r = s.post(BASE + "/v2/activity/growth/buddy/first", json={}, timeout=20, verify=False).json()
-        log("   🐱首只Buddy: %s" % ("成功" if r.get("code") == 0 else str(r.get("msg", ""))[:40]))
+        credit = (r.get("data") or {}).get("credit", 0)
+        energy = (r.get("data") or {}).get("energy", 0)
+        log("   🐱首只Buddy: %s (credit=+%s energy=+%s)" % (
+            "成功" if r.get("code") == 0 else str(r.get("msg", ""))[:40], credit, energy))
     except Exception as e:
         log("   🐱首只Buddy异常: %s" % str(e)[:40])
 
@@ -1769,6 +1780,191 @@ def school_lottery(s, uid, nick, log):
             log("  🏫 lottery 汇总: %d 抽，奖品: %s" % (len(results), ", ".join(results)))
     except Exception as e:
         log("  🏫 lottery 异常 %s" % str(e)[:80])
+
+
+# ---------- 稳定指纹 & 事件构建（从 task_runner.py 移植） ----------
+def derive_id(uid, salt):
+    """由 uid 稳定派生 36 位 hex 设备标识（md5，幂等：同账号每次相同）。"""
+    return hashlib.md5(("%s:%s" % (salt, uid)).encode()).hexdigest()[:36]
+
+
+def desktop_fingerprint(uid, nick):
+    """公共桌面指纹（注入每个桌面事件，覆盖同名业务键）。"""
+    now = int(time.time() * 1000)
+    return {
+        "timezone": "Asia/Shanghai", "reportDelay": 2000,
+        "userId": uid, "username": nick, "userNickname": nick,
+        "product": "SaaS", "releaseDate": 1789036585355,
+        "commit": "5f9692923c93033111c51ad7b003eb80204a9b75",
+        "ideName": "WorkBuddy", "ideType": "WorkBuddy", "ideVersion": "5.5.6",
+        "machineId": derive_id(uid, "machine"), "sessionId": derive_id(uid, "session"),
+        "extName": "workbuddy-desktop", "extVersion": "5.5.6",
+        "os": "win32", "arch": "x64", "osVersion": "10.0.26220",
+        "cpuCores": 20, "memorySize": 24,
+        "timestamp": now, "presentAt": now,
+    }
+
+
+def within_night_window():
+    """CST 夜猫窗口 23:00 - 次日 08:00"""
+    try:
+        import datetime as _dt
+        now = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=8)))
+        return now.hour >= 23 or now.hour < 8
+    except Exception:
+        return None
+
+
+def desktop_chat_sequence(uid, nick, conversation_id, request_id, message_id,
+                          model_id="fast-model", model_name="fast-model"):
+    """6 连「桌面端成功对话」事件链（点亮 RichMeow_Chat）。"""
+    now = int(time.time() * 1000)
+    ev = []
+    def mk(code, extra):
+        e = {"eventCode": code}
+        e.update(extra)
+        ev.append(e)
+    mk("agent_task_created", {
+        "source": "LOCAL", "name": "working", "task_target": "local", "mode": "craft",
+        "requestModelId": model_id, "requestModelName": model_name,
+        "has_repo": False, "repo_type": "none", "workspace_type": "empty",
+        "has_connector": False, "connector_types": [],
+        "has_mention": False, "mention_types": [],
+        "has_template": False, "action": "", "template_name": "",
+        "has_expert": False, "expert_id": "", "expert_name": "", "expert_industry_id": "",
+        "has_skill": False, "skill_names": [],
+        "conversationId": conversation_id, "messageId": message_id,
+        "buddyId": "", "buddyName": ""})
+    mk("chat_message_send", {
+        "messageId": message_id + "-assistant", "historyCount": 0,
+        "isContextTruncated": False, "currentStepCount": 1,
+        "traceId": request_id, "rootRequestId": request_id,
+        "parentConversationId": conversation_id,
+        "agentName": "cli", "agentType": "main"})
+    mk("chat_request_send", {
+        "inputLength": 24, "isPlan": False, "isAutoExecuteTerminal": False,
+        "isAutoModify": False, "codebaseEnable": False, "maxToken": 0,
+        "maxSteps": 500, "temperature": 0, "maxRetries": 0,
+        "mentionContexts": [], "knowledgeId": [], "knowledgeName": [],
+        "codebaseId": "", "mentionContextCount": 0, "command": "",
+        "recommendId": "", "skillId": "", "skillCount": 0, "totalCount": 0,
+        "traceId": request_id, "rootRequestId": request_id,
+        "parentConversationId": conversation_id,
+        "agentName": "cli", "agentType": "main"})
+    mk("chat_message_response", {
+        "messageId": message_id + "-assistant", "responseModelId": model_id,
+        "inputToken": 120, "outputToken": 80, "totalToken": 200,
+        "cachedTokens": 0, "cachedWriteTokens": 0, "cachedMissTokens": 0,
+        "isSuccessful": True, "messageErrorCode": "", "finishReason": "stop",
+        "firstTokenAt": now, "traceId": request_id,
+        "conversationId": conversation_id,
+        "rootRequestId": request_id, "parentConversationId": conversation_id,
+        "agentName": "cli", "agentType": "main"})
+    mk("chat_message_status", {
+        "messageId": message_id + "-assistant", "messageErrorCode": "0",
+        "traceId": request_id, "rootRequestId": request_id,
+        "parentConversationId": conversation_id,
+        "agentName": "cli", "agentType": "main"})
+    mk("chat_request_response", {
+        "mode": "craft", "toolCallCount": 0,
+        "inputToken": 120, "outputToken": 80, "totalToken": 200,
+        "cachedTokens": 0, "cachedWriteTokens": 0, "cachedMissTokens": 0,
+        "isSuccessful": True, "messageErrorCode": "", "finishReason": "stop",
+        "rootRequestId": request_id, "parentConversationId": conversation_id,
+        "agentName": "cli", "agentType": "main"})
+    return ev
+
+
+def desktop_buddy5_sequence(uid, nick, buddy_id, buddy_name):
+    """五连「进入 Buddy 应用」事件（点亮 Buddy_App/_QQ）。"""
+    ev = []
+    def mk(code, extra):
+        e = {"eventCode": code, "mode": "LOCAL",
+             "buddyId": buddy_id, "buddyName": buddy_name}
+        e.update(extra)
+        ev.append(e)
+    mk("buddyapp_discover_click", {})
+    mk("buddyapp_show", {"elementId": buddy_id, "elementName": buddy_name, "position": 2})
+    mk("buddyapp_enter_click",
+       {"elementId": buddy_id, "elementName": buddy_name, "position": 2, "isFirstPage": "1"})
+    mk("buddyapp_auth_confirm_click", {"elementId": buddy_id, "elementName": buddy_name})
+    mk("buddyapp_bindaccount_skip_click", {"elementId": buddy_id, "elementName": buddy_name})
+    return ev
+
+
+def report_desktop_events(s, uid, nick, events):
+    """以桌面指纹向 {BASE}/v2/report 批量上报；每个事件注入 desktop_fingerprint。"""
+    fp = desktop_fingerprint(uid, nick)
+    arr = []
+    for e in events:
+        m = dict(e)
+        m.update(fp)
+        arr.append(m)
+    out = {"common": {"userId": uid, "userNickname": nick, "ideName": "WorkBuddy",
+                      "ideType": "WorkBuddy", "machineId": fp["machineId"],
+                      "mode": "LOCAL", "userAgent": UA, "os": "win32",
+                      "timezone": "Asia/Shanghai"},
+           "events": arr}
+    return api_retry(s, "POST", BASE + "/v2/report", body=out)
+
+
+def report_web_event(s, uid, nick, event_code, page_url, element_id, element_name):
+    """以 web 域指纹上报单事件（Library_read）。"""
+    now = int(time.time() * 1000)
+    ev = {"eventCode": event_code, "timestamp": now, "reportDelay": 0,
+          "pageURL": page_url, "elementId": element_id, "elementName": element_name,
+          "os": "Win32", "arch": "", "osVersion": "10.0",
+          "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          "machineId": derive_id(uid, "webmachine"), "userId": uid, "userNickname": nick}
+    return api_retry(s, "POST", BASE + "/v2/report", body={"common": {
+        "userId": uid, "userNickname": nick, "ideName": "web",
+        "ideType": "web", "machineId": derive_id(uid, "webmachine"),
+        "mode": "CLOUD", "userAgent": "Mozilla/5.0", "os": "Win32",
+        "timezone": "Asia/Shanghai"}, "events": [ev]})
+
+
+def _accept_with_verify(s, code, log):
+    """accept 并验证登记生效（读 results[].status + 回读 accept_status）。"""
+    for attempt in (1, 2):
+        r = s.post(BASE + "/v2/activity/growth/tasks/accept", json={"task_codes": [code]},
+                   timeout=20, verify=False)
+        status = ""
+        try:
+            d = r.json()
+            results = (d.get("data") or {}).get("results") or []
+            status = (results[0].get("status") or "") if results else (d.get("msg") or "")
+        except Exception:
+            pass
+        t = prog(s, code)
+        ast = t[0] if t else "not_accepted"
+        ok = (r.status_code == 200 and status == "accepted" and ast != "not_accepted")
+        log("   accept %s 尝试%d status=%s 回读=%s%s" % (code, attempt, status, ast, " → 生效" if ok else ""))
+        if ok:
+            return True
+        time.sleep(WRITE_GAP)
+    return False
+
+
+def _accept_with_verify(s, code, log):
+    """accept 并验证登记生效（读 results[].status + 回读 accept_status）。"""
+    for attempt in (1, 2):
+        r = s.post(BASE + "/v2/activity/growth/tasks/accept", json={"task_codes": [code]},
+                   timeout=20, verify=False)
+        status = ""
+        try:
+            d = r.json()
+            results = (d.get("data") or {}).get("results") or []
+            status = (results[0].get("status") or "") if results else (d.get("msg") or "")
+        except Exception:
+            pass
+        t = prog(s, code)
+        ast = t[0] if t else "not_accepted"
+        ok = (r.status_code == 200 and status == "accepted" and ast != "not_accepted")
+        log("   accept %s 尝试%d status=%s 回读=%s%s" % (code, attempt, status, ast, " → 生效" if ok else ""))
+        if ok:
+            return True
+        time.sleep(WRITE_GAP)
+    return False
 
 
 # ---------- 单账号全流程 ----------
