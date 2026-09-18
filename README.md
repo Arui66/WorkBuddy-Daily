@@ -4,7 +4,7 @@
 
 **WorkBuddy 成长中心 · 全能签到脚本 · 单文件自包含**
 
-🔐 Token 永续 · ✅ 16 项成长任务 · 🖥️ 桌面换血 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📊 全中文报告 · 📢 内置推送 · 🐧 青龙友好 · ☁️ GitHub Actions
+🔐 Token 永续 · ✅ 16 项成长任务 · 🏫 开学季活动 · 🖥️ 桌面换血 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📊 全中文报告 · 📢 内置推送 · 🐧 青龙友好 · ☁️ GitHub Actions
 
 <img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white" />
 <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20%E9%9D%92%E9%BE%99-4EAA25?style=for-the-badge&logo=linux&logoColor=white" />
@@ -19,7 +19,7 @@
 
 ## ✨ 这是什么
 
-一个脚本搞定 **WorkBuddy 成长中心** 的全部自动化：**Token 自动续期 → 积分/用量/成长查询 → 16 项成长任务 → 8 项互动玩法 → 自动领奖 → 中文报告推送**，全流程无人值守，重复运行只补缺口、不重复领取。
+一个脚本搞定 **WorkBuddy 成长中心 + 开学季活动** 的全部自动化：**Token 自动续期 → 积分/用量/成长查询 → 16 项成长任务 → 8 项互动玩法 → 开学季任务 + 大转盘抽奖 → 自动领奖 → 中文报告推送**，全流程无人值守，重复运行只补缺口、不重复领取。
 
 > 🎯 一句话：**配一个刷新令牌，剩下交给它。**
 >
@@ -146,11 +146,14 @@ python workbuddy_login.py --verify           # 登录后额外验证 RT 是否�
 ## ⌨️ 命令行参数
 
 ```bash
-python workbuddy_daily.py                # 全流程：续期 → 查询 → 任务 → 领奖
+python workbuddy_daily.py                # 全流程：续期 → 查询 → 任务 → 开学季 → 领奖
 python workbuddy_daily.py --refresh      # 仅刷新所有账号 Token
 python workbuddy_daily.py --query        # 仅查询积分/用量/成长
 python workbuddy_daily.py --no-desktop   # 跳过桌面任务（非 Windows 自动生效）
+python workbuddy_daily.py --no-school    # 跳过开学季活动
+python workbuddy_daily.py --school-only  # 只跑开学季活动（不做成长中心任务）
 python workbuddy_daily.py --only 3       # 只跑第 3 个账号
+python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，最低 1.0）
 ```
 
 ---
@@ -191,6 +194,18 @@ python workbuddy_daily.py --only 3       # 只跑第 3 个账号
 </details>
 
 <details>
+<summary><b>🏫 开学季活动（5 任务 + 大转盘，活动期内自动执行）</b></summary>
+
+分享活动给好友 · 与 AI 对话 3 次 · 桌面端对话 1 次 · 召唤开学季专家 · ~~学生认证~~（人工）
+
++ **幸运大转盘**：查余额 → 循环抽奖到 0（奖品：6/66 积分、瑞幸 15 元券、KFC OK 餐券、KFC 冰淇淋券、酷狗会员月卡）
+
+> 💡 走 `/portal/activity/school/*` 端点 + 小程序 UA + `activityId` 事件关联，与成长中心任务独立。
+> 💡 活动结束后（`in_period=false`）自动跳过，不会报错。
+
+</details>
+
+<details>
 <summary><b>🔹 其他</b></summary>
 
 每日签到（独立于成长任务的 billing 签到，自动完成）
@@ -207,6 +222,8 @@ python workbuddy_daily.py --only 3       # 只跑第 3 个账号
 - **🔍 未覆盖任务检测**：每次运行扫描成长任务列表，发现脚本尚未适配的新任务会打印 ⚠️ 提示，方便及时更新脚本。
 - **♻️ 幂等补缺**：所有任务先查进度再执行，已完成 / 已领取直接跳过，重复运行零副作用。
 - **⏰ 智能续期**：距上次刷新 > 10 天或 AT 7 天内过期才刷新，避免无谓轮换。
+- **🔄 API 重试**：网络错误 / 5xx 自动指数退避重试 3 次；`--gap` 可调写动作间隔防频控。
+- **🏫 开学季活动**：自动执行开学季限时任务（分享 / 对话 / 专家）+ 幸运大转盘抽奖。
 
 ---
 
