@@ -12,10 +12,12 @@
    🔐 Token 永续     只配一个刷新令牌变量，脚本自动续期（90 天滚动，永不过期）
    ✅ 18 项任务      14 项纯 API（云端直接跑）+ 2 项桌面任务（自动换血，非 Windows 跳过）
    🎮 8 项互动玩法   抽奖、盲盒、Buddy、派猫猫旅行、连签兑换、补签卡、礼包补偿、徽章
+   🏫 开学季活动     分享/对话/桌面对话/专家/大转盘抽奖（含瑞幸/KFC/酷狗实物券）
    💰 三类查询       积分套餐（剩余/总量/已用）、用量统计、成长数据（等级/连签/能量）
    🎁 自动领奖       扫描全部已完成任务，自动领取积分与能量
    📢 推送通知       可选 PUSHPLUS_TOKEN，运行结果推送到微信
    🧩 幂等安全       重复运行只补缺口，不会重复领取或重复操作
+   🔄 API 重试       网络/5xx 自动指数退避重试，写动作间隔可调（--gap）
    🐧 青龙友好       非 Windows 自动跳过桌面任务，纯 API 部分直接跑
 
 🚀 使用方法（青龙面板三步）
@@ -29,7 +31,10 @@
    python workbuddy_daily.py --refresh     仅刷新所有账号 Token
    python workbuddy_daily.py --query       仅查询积分/用量/成长
    python workbuddy_daily.py --no-desktop  跳过桌面任务（非 Windows 自动生效）
+   python workbuddy_daily.py --no-school   跳过开学季活动
+   python workbuddy_daily.py --school-only 只跑开学季活动（不做成长中心任务）
    python workbuddy_daily.py --only 3      只跑第 3 个账号
+   python workbuddy_daily.py --gap 2.0     写动作间隔秒数（默认 1.5，最低 1.0）
 
 🔑 环境变量
    WORKBUDDY_REFRESH_TOKEN   【必填】多账号刷新令牌，换行分隔
@@ -75,8 +80,12 @@
 🔒 隐私说明
    脚本不含任何账号、手机号、Token 或设备信息，所有凭据均由环境变量注入。
 """
-import sys, os, json, time, uuid, base64, glob, glob as _glob, shutil, subprocess, threading, queue
+import sys, os, json, time, uuid, base64, glob, hashlib, glob as _glob, shutil, subprocess, threading, queue
 import requests
+
+
+class TransientError(RuntimeError):
+    """网络/5xx 可重试错误。"""
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -434,6 +443,13 @@ if ONLY is not None:
     ACCOUNTS = [ACCOUNTS[ONLY]]
 QUERY_ONLY = "--query" in sys.argv
 NO_DESKTOP = "--no-desktop" in sys.argv
+NO_SCHOOL = "--no-school" in sys.argv
+SCHOOL_ONLY = "--school-only" in sys.argv
+if "--gap" in sys.argv:
+    try:
+        WRITE_GAP = max(1.0, float(sys.argv[sys.argv.index("--gap") + 1]))
+    except (ValueError, IndexError):
+        pass
 
 # ---------- 基础 ----------
 def new_api(tok):
@@ -442,6 +458,48 @@ def new_api(tok):
                       "Accept": "application/json, text/plain, */*", "Origin": BASE,
                       "Referer": BASE + "/profile/growth-center", "User-Agent": UA})
     return s
+
+
+WRITE_GAP = 1.5  # 写动作间隔秒数（--gap 可覆盖，最低 1.0）
+
+
+def api_retry(s, method, url, body=None, retries=3, gap=1.0, **kw):
+    """带指数退避重试的 API 请求：网络错误/5xx 自动重试，4xx 不重试。"""
+    last_err = None
+    for i in range(1, retries + 1):
+        try:
+            if method == "GET":
+                r = s.get(url, timeout=25, verify=False, **kw)
+            else:
+                r = s.post(url, json=body, timeout=25, verify=False, **kw)
+            if 500 <= r.status_code < 600 and i < retries:
+                last_err = RuntimeError("http %s" % r.status_code)
+                time.sleep(gap * i)
+                continue
+            return r
+        except Exception as e:
+            last_err = e
+            if i < retries:
+                time.sleep(gap * i)
+            continue
+    if last_err:
+        raise last_err
+    return r
+
+
+def interpret_failure(st, r_json):
+    """结构化错误分类：返回 (描述, 是否应跳过该账号)。"""
+    code = r_json.get("code") if isinstance(r_json, dict) else None
+    msg = str(r_json.get("msg", "") or r_json.get("message", ""))[:120] if isinstance(r_json, dict) else str(r_json)[:80]
+    if st == 401 or code in (401, "401", 40100, "40100"):
+        return "401/40100 Token 失效或未绑定", True
+    if st == 403:
+        return "403 禁止访问", True
+    if code in (41000, "41000"):
+        return "41000 活动未开始或已结束", False
+    if code in (40901, "40901"):
+        return "40901 任务暂不可领取", False
+    return "http=%s code=%s %s" % (st, code, msg), False
 
 
 def uid_of(tok):
@@ -1351,6 +1409,280 @@ def t_unknown_tasks(s, uid, nick, log):
             log("   ⚠️未覆盖新任务: %s %s (%s) — 请反馈更新脚本" % (code, t.get("title", ""), desc))
 
 
+# ---------- 开学季活动（school_open_day_2026） ----------
+SCHOOL_DOMAIN = "https://www.codebuddy.cn"
+SCHOOL_BASE = SCHOOL_DOMAIN + "/portal/activity/school"
+SCHOOL_FRESHMAN = SCHOOL_DOMAIN + "/portal/activity/freshman"
+SCHOOL_TEACHER = SCHOOL_DOMAIN + "/portal/activity/teacher"
+SCHOOL_ACTIVITY_ID = "school_open_day_2026"
+MP_UA = ("Mozilla/5.0 (Linux; Android 14; MicroMessenger/8.0.49 WeChat/0.8.0 "
+         "MiniProgramEnv/android; wkbrowser xweb)")
+SCHOOL_EXPERT_CATEGORY = "16-BackToSchool"
+SCHOOL_EXPERT_FALLBACK = {"expert-school-01": {"id": "expert-school-01", "name": "开学季助手", "profession": "教育"}}
+LOTTERY_PRIZE_LABELS = {
+    "school_credit_6": "6积分", "school_credit_66": "66积分",
+    "school_voucher_luckin": "瑞幸咖啡15元券", "school_voucher_kfc_ok": "肯德基OK餐券",
+    "school_voucher_kfc_ice": "肯德基冰淇淋券", "school_voucher_kugou": "酷狗会员月卡券",
+}
+# 学校活动任务：manual=人工跳过, report=遥测点亮, share=share-complete
+SCHOOL_TASK_MODES = {
+    "task_student_verify": {"mode": "manual", "note": "微信学生认证（人工）"},
+    "share_invite": {"mode": "share", "note": "分享活动给好友"},
+    "chat_3_times": {"mode": "report", "note": "与AI对话3次", "kind": "mini_chat"},
+    "desktop_chat_1_time": {"mode": "report", "note": "桌面端对话1次", "kind": "desktop_seq"},
+    "expert_use": {"mode": "report", "note": "召唤开学季专家并对话", "kind": "expert"},
+}
+
+
+def _school_session(at):
+    """用现有 AT 创建 school 活动会话（小程序 UA + codebuddy 域）。"""
+    s = requests.Session()
+    s.trust_env = False
+    s.headers.update({"Authorization": "Bearer " + at, "Accept": "application/json",
+                      "Content-Type": "application/json", "User-Agent": MP_UA,
+                      "Referer": "https://www.codebuddy.cn/"})
+    return s
+
+
+def _school_get(s, url):
+    return api_retry(s, "GET", url)
+
+
+def _school_post(s, url, body=None):
+    return api_retry(s, "POST", url, body=body)
+
+
+def _school_report(s, uid, nick, events):
+    """向 codebuddy.cn/v2/report 上报开学季事件（带 activityId）。"""
+    out = {"common": {"userId": uid, "userNickname": nick, "ideName": "web-Agents",
+                      "ideType": "web-Agents", "machineId": str(uuid.uuid4()), "mode": "CLOUD",
+                      "userAgent": MP_UA, "os": "Android", "timezone": "Asia/Shanghai"},
+           "events": events}
+    return api_retry(s, "POST", SCHOOL_DOMAIN + "/v2/report", body=out)
+
+
+def _school_fetch_expert(s):
+    """拉取 BackToSchool 分类的专家，失败回落已知专家。"""
+    try:
+        r = _school_post(s, SCHOOL_DOMAIN + "/v2/operation-platform/market/expert/list",
+                         {"page": 1, "page_size": 10,
+                          "categories": [SCHOOL_EXPERT_CATEGORY], "expert_type": "agent"})
+        d = r.json()
+        experts = (d.get("data") or {}).get("experts") or []
+        if experts:
+            e = experts[0]
+            return e.get("id", ""), e.get("displayName", e.get("name", "开学季专家"))
+    except Exception:
+        pass
+    for eid, info in SCHOOL_EXPERT_FALLBACK.items():
+        return eid, info["name"]
+    return "", ""
+
+
+def _school_mini_chat_event(uid, nick, conv_id):
+    rid = str(uuid.uuid4())
+    return {"common": {"userId": uid, "userNickname": nick, "ideName": "web-Agents",
+                       "ideType": "web-Agents", "machineId": str(uuid.uuid4()), "mode": "CLOUD",
+                       "userAgent": MP_UA, "os": "Android", "timezone": "Asia/Shanghai"},
+            "events": [{"eventCode": "chat_request_send", "timestamp": int(time.time() * 1000),
+                        "activityId": SCHOOL_ACTIVITY_ID, "conversationId": conv_id,
+                        "requestId": rid, "messageId": "msg-" + rid,
+                        "requestModelId": "glm-5.2", "requestModelName": "GLM-5.2",
+                        "inputLength": 20, "customAgentName": "", "mentionContexts": [],
+                        "mentionContextCount": 0}]}
+
+
+def _school_desktop_seq_event(uid, nick, conv_id):
+    """模拟一次桌面对话的 6 连指纹事件 + activityId。"""
+    base_ts = int(time.time() * 1000)
+    mid = hashlib.md5((uid + "school").encode()).hexdigest()
+    rid = str(uuid.uuid4()); mid_msg = "msg-" + rid
+    def mk(code, extra=None):
+        ev = {"eventCode": code, "timestamp": base_ts, "activityId": SCHOOL_ACTIVITY_ID,
+              "userId": uid, "userNickname": nick, "machineId": mid,
+              "requestId": rid, "messageId": mid_msg, "conversationId": conv_id}
+        if extra: ev.update(extra)
+        return ev
+    return [mk("wbx_app_launch"), mk("wbx_desktop_ready"), mk("chat_request_send",
+            {"requestModelId": "glm-5.2", "inputLength": 20}),
+            mk("chat_response_received", {"requestModelId": "glm-5.2"}),
+            mk("wbx_session_end"), mk("wbx_app_close")]
+
+
+def _school_expert_event(uid, nick, expert_id, expert_name, conv_id):
+    rid = str(uuid.uuid4()); mid_msg = "msg-" + rid
+    return {"common": {"userId": uid, "userNickname": nick, "ideName": "web-Agents",
+                       "ideType": "web-Agents", "machineId": str(uuid.uuid4()), "mode": "CLOUD",
+                       "userAgent": MP_UA, "os": "Android", "timezone": "Asia/Shanghai"},
+            "events": [{"eventCode": "expert_summoned", "id": expert_id, "name": expert_name,
+                        "type": "agent", "source": "builtin", "timestamp": int(time.time() * 1000),
+                        "activityId": SCHOOL_ACTIVITY_ID},
+                       {"eventCode": "expert_actual_use", "id": expert_id, "name": expert_name,
+                        "type": "agent", "expertType": "agent", "source": "builtin",
+                        "cost": 5, "characterCount": 20, "requestId": rid, "messageId": mid_msg,
+                        "conversationId": conv_id, "timestamp": int(time.time() * 1000),
+                        "activityId": SCHOOL_ACTIVITY_ID}]}
+
+
+def _school_fetch_tasks(s):
+    r = _school_get(s, SCHOOL_BASE + "/tasks")
+    d = r.json()
+    if d.get("code") != 0:
+        return [], False
+    data = d.get("data") or {}
+    return data.get("tasks") or [], data.get("in_period", False)
+
+
+def _school_viewed(s, code):
+    r = _school_post(s, SCHOOL_BASE + "/tasks/%s/viewed" % code)
+    return r.json().get("code") == 0
+
+
+def _school_share_complete(s):
+    r = _school_post(s, SCHOOL_BASE + "/tasks/share-complete", {"channel": "wechat"})
+    return r.json().get("code") == 0
+
+
+def _school_claim(s, code):
+    r = _school_post(s, SCHOOL_BASE + "/tasks/%s/claim" % code)
+    return r.json().get("code") == 0
+
+
+def school_run_tasks(s, uid, nick, log):
+    """执行开学季任务的完整流程：viewed → 判据 → 轮询 → claim → 抽奖。"""
+    tasks, in_period = _school_fetch_tasks(s)
+    if not in_period:
+        log("  🏫 开学季活动非进行期，跳过")
+        return
+    log("  🏫 ── 开学季活动（%d 个任务）──" % len(tasks))
+    for t in tasks:
+        code = t.get("task_code", "")
+        status = t.get("status", "")
+        spec = SCHOOL_TASK_MODES.get(code)
+        if not code:
+            continue
+        if status in ("completed", "claimed"):
+            log("   %s: %s 已完成/已领，跳过" % (code, status))
+            continue
+        if spec is None:
+            log("   %s: 未知任务类型，跳过" % code)
+            continue
+        mode = spec["mode"]
+        if mode == "manual":
+            log("   %s: 人工环节（%s），跳过" % (code, spec.get("note", "")))
+            continue
+        # viewed 激活
+        try:
+            if _school_viewed(s, code):
+                log("   %s: viewed 激活" % code)
+                time.sleep(WRITE_GAP)
+        except Exception as e:
+            log("   %s: viewed 失败 %s" % (code, str(e)[:60]))
+            continue
+        # 判据
+        ok = False
+        if mode == "share":
+            try:
+                ok = _school_share_complete(s)
+                log("   %s: share-complete %s" % (code, "✅" if ok else "❌"))
+                time.sleep(WRITE_GAP)
+            except Exception as e:
+                log("   %s: share 失败 %s" % (code, str(e)[:60]))
+        elif mode == "report":
+            kind = spec.get("kind", "")
+            conv_id = "conv-" + str(uuid.uuid4())
+            if kind == "mini_chat":
+                for i in range(3):
+                    ev = _school_mini_chat_event(uid, nick, conv_id)
+                    try:
+                        _school_report(s, uid, nick, ev["events"])
+                        log("   %s: chat #%d/3 ✅" % (code, i + 1))
+                        time.sleep(WRITE_GAP)
+                    except Exception as e:
+                        log("   %s: chat #%d 失败 %s" % (code, i + 1, str(e)[:60]))
+            elif kind == "desktop_seq":
+                evs = _school_desktop_seq_event(uid, nick, conv_id)
+                try:
+                    _school_report(s, uid, nick, evs)
+                    log("   %s: desktop_seq ✅" % code)
+                    time.sleep(WRITE_GAP)
+                except Exception as e:
+                    log("   %s: desktop 失败 %s" % (code, str(e)[:60]))
+            elif kind == "expert":
+                eid, ename = _school_fetch_expert(s)
+                if eid:
+                    ev = _school_expert_event(uid, nick, eid, ename, conv_id)
+                    try:
+                        _school_report(s, uid, nick, ev["events"])
+                        log("   %s: expert_use ✅ (%s)" % (code, ename))
+                        time.sleep(WRITE_GAP)
+                    except Exception as e:
+                        log("   %s: expert 失败 %s" % (code, str(e)[:60]))
+        # 轮询等待完成
+        for _ in range(5):
+            time.sleep(2)
+            try:
+                ts2, _ = _school_fetch_tasks(s)
+                after = next((x for x in ts2 if x.get("task_code") == code), None)
+                if after and after.get("status") in ("completed", "claimed"):
+                    log("   %s: ✅ 已完成" % code)
+                    break
+            except Exception:
+                pass
+        # claim
+        try:
+            ts3, _ = _school_fetch_tasks(s)
+            after = next((x for x in ts3 if x.get("task_code") == code), None)
+            if after and after.get("status") == "completed":
+                if _school_claim(s, code):
+                    log("   %s: 🎁 已领奖" % code)
+                    time.sleep(WRITE_GAP)
+        except Exception as e:
+            log("   %s: claim 失败 %s" % (code, str(e)[:60]))
+
+
+def school_lottery(s, uid, nick, log):
+    """开学季幸运大转盘：查余额 → 循环抽到 0。"""
+    try:
+        r = _school_get(s, SCHOOL_BASE + "/config")
+        d = r.json()
+        if d.get("code") != 0:
+            log("  🏫 lottery config 失败")
+            return
+        chance = (d.get("data") or {}).get("chance") or {}
+        bal = chance.get("balance", 0)
+        if not bal or bal <= 0:
+            log("  🏫 lottery 余额=0，无需抽奖")
+            return
+        log("  🏫 lottery 余额=%s，开始抽奖..." % bal)
+        results = []
+        while bal > 0:
+            time.sleep(WRITE_GAP)
+            draw_uuid = str(uuid.uuid4())
+            try:
+                r2 = _school_post(s, SCHOOL_BASE + "/wheel/draw", {"draw_uuid": draw_uuid})
+                d2 = r2.json()
+                if d2.get("code") == 40900:
+                    log("  🏫 lottery 次数耗尽")
+                    break
+                if d2.get("code") != 0:
+                    log("  🏫 lottery draw 失败: %s" % str(d2.get("msg", ""))[:60])
+                    break
+                prize = (d2.get("data") or {}).get("prize_code", "")
+                credit = (d2.get("data") or {}).get("credit_amount", 0)
+                label = LOTTERY_PRIZE_LABELS.get(prize, prize or "未知")
+                results.append(label)
+                bal -= 1
+                log("  🏫 lottery → %s（余 %s）" % (label, bal))
+            except Exception as e:
+                log("  🏫 lottery draw 异常 %s" % str(e)[:60])
+                break
+        if results:
+            log("  🏫 lottery 汇总: %d 抽，奖品: %s" % (len(results), ", ".join(results)))
+    except Exception as e:
+        log("  🏫 lottery 异常 %s" % str(e)[:80])
+
+
 # ---------- 单账号全流程 ----------
 def run_account(idx, acc, do_desktop):
     tok = acc.get("access_token", "")
@@ -1429,6 +1761,14 @@ def run_account(idx, acc, do_desktop):
     t_makeup(s, uid, nick, log)
     t_workstation(s, uid, nick, log, tok)
     t_unknown_tasks(s, uid, nick, log)
+    # 开学季活动（可 --no-school 跳过）
+    if not NO_SCHOOL:
+        try:
+            school_s = _school_session(tok)
+            school_run_tasks(school_s, uid, nick, log)
+            school_lottery(school_s, uid, nick, log)
+        except Exception as e:
+            log("  🏫 开学季活动异常: %s" % str(e)[:80])
     # 领奖
     log("  🎁 ── 领奖 ──")
     r = s.get(BASE + "/v2/activity/growth/tasks", timeout=25, verify=False).json()
@@ -1555,6 +1895,23 @@ def main():
         do_desktop = False
     all_msgs = []
     summaries = []
+    if SCHOOL_ONLY:
+        do_desktop = False
+        for i, acc in enumerate(ACCOUNTS):
+            tok = acc.get("access_token", "")
+            if not tok:
+                print("❌ 账号%d AT 为空，跳过" % (i + 1))
+                continue
+            uid = uid_of(tok); nick = nickname_of(tok)
+            s2 = _school_session(tok)
+            print("╭─ 👤 账号%d  %s [school-only]" % (i + 1, acc.get("note", "")))
+            try:
+                school_run_tasks(s2, uid, nick, lambda m: print(m))
+                school_lottery(s2, uid, nick, lambda m: print(m))
+            except Exception as e:
+                print("  ❌ 开学季异常: %s" % str(e)[:80])
+            time.sleep(WRITE_GAP)
+        return
     if QUERY_ONLY:
         with ThreadPoolExecutor(max_workers=min(6, len(ACCOUNTS))) as ex:
             futs = {ex.submit(run_account, i + 1, acc, False): i for i, acc in enumerate(ACCOUNTS)}
