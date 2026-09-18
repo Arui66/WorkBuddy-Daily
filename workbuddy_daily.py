@@ -10,7 +10,7 @@
 
 ✨ 特性
    🔐 Token 永续     只配一个刷新令牌变量，脚本自动续期（90 天滚动，永不过期）
-   ✅ 18 项任务      14 项纯 API（云端直接跑）+ 2 项桌面任务（自动换血，非 Windows 跳过）
+   ✅ 18+ 项任务     14 项纯 API + 2 项桌面任务 + 轻量云专家 + 小程序成长任务
    🎮 8 项互动玩法   抽奖、盲盒、Buddy、派猫猫旅行、连签兑换、补签卡、礼包补偿、徽章
    🏫 开学季活动     分享/对话/桌面对话/专家/大转盘抽奖（含瑞幸/KFC/酷狗实物券）
    💰 三类查询       积分套餐（剩余/总量/已用）、用量统计、成长数据（等级/连签/能量）
@@ -528,7 +528,14 @@ def prog(s, code):
 
 
 def claim(s, code, log):
-    r = s.post(BASE + "/v2/activity/growth/tasks/%s/claim" % code, json={}, timeout=20, verify=False)
+    """M15 领奖：chat 域 400 时自动降级 web 域（x-client-platform: web）。"""
+    r = s.post(BASE + "/activity/growth/tasks/%s/claim" % code, json={}, timeout=20, verify=False)
+    if r.status_code == 400:
+        # 降级 web 域
+        r = s.post(BASE + "/activity/growth/tasks/%s/claim" % code, json={},
+                   timeout=20, verify=False,
+                   headers={"Origin": BASE, "Referer": BASE + "/profile/growth-center",
+                            "x-client-platform": "web"})
     try:
         d = r.json().get("data", {})
         log("   🎁领奖[%s]: %s" % (code, "已领过" if d.get("already_claimed") else "+%s积分+%s能量" % (d.get("credit"), d.get("energy"))))
@@ -1385,6 +1392,88 @@ def t_workstation(s, uid, nick, log, tok):
     log("   工作台搭建师: %s %s/%s" % prog(s, "workstation_expert"))
 
 
+def t_lighthouse(s, uid, nick, log):
+    """腾讯轻量云专家：拉取专家 → 伪造 expert_actual_use 上报（M15 同款）"""
+    st, cur, tgt = prog(s, "Expert_lighthouse")
+    if st in ("completed", "claimed"):
+        return
+    try:
+        experts = get_normal_experts(20)
+        lh = next((e for e in experts if "轻量" in (e.get("name") or "") or "lighthouse" in (e.get("id") or "").lower()), None)
+        if not lh:
+            lh = {"id": "expert-lh-" + str(uuid.uuid4())[:8], "name": "轻量云专家", "profession": ""}
+        rid = str(uuid.uuid4()); cid = "conv-" + str(uuid.uuid4())
+        report(s, uid, nick, [{
+            "eventCode": "expert_summoned", "id": lh["id"], "name": lh["name"],
+            "type": "agent", "expertTitle": lh.get("profession", ""), "expertType": "agent",
+            "source": "builtin", "timestamp": int(time.time() * 1000)},
+            {"eventCode": "expert_actual_use", "id": lh["id"], "name": lh["name"],
+             "expertTitle": lh.get("profession", ""), "type": "agent", "expertType": "agent",
+             "source": "builtin", "version": "", "cost": 0, "characterCount": 12,
+             "conversationId": cid, "requestId": rid, "messageId": rid,
+             "requestModelId": "deepseek-v4-flash", "requestModelName": "DeepSeek V4 Flash",
+             "userId": uid}])
+        time.sleep(3)
+        st, cur, tgt = prog(s, "Expert_lighthouse")
+        log("   腾讯轻量云专家: %s %s/%s" % (st, cur, tgt))
+    except Exception as e:
+        log("   腾讯轻量云专家: 失败 %s" % str(e)[:60])
+
+
+def _mini_report(s, uid, nick, conv_id):
+    """小程序指纹 chat_request_send 上报（Sequential_Tasks_1 / school_season 判据）。"""
+    rid = str(uuid.uuid4())
+    ev = {"eventCode": "chat_request_send", "timestamp": int(time.time() * 1000),
+          "reportDelay": 0, "source": "mini_program", "ideName": "wx_app_cloud",
+          "ideType": "WorkBuddy_MP", "extName": "workbuddy-mp", "extVersion": "2.4.0",
+          "mode": "chat", "conversationId": conv_id, "requestId": conv_id,
+          "inputLength": 12, "requestModelId": "glm-5.2", "requestModelName": "GLM-5.2",
+          "isPlan": False, "codebaseEnable": False, "maxToken": 0, "maxSteps": 0,
+          "temperature": 0, "mentionContexts": [], "knowledgeId": [],
+          "agentName": "default", "agentType": "conversation", "userId": uid}
+    return report(s, uid, nick, [ev])
+
+
+def t_sequential_tasks(s, uid, nick, log):
+    """小程序成长任务 Sequential_Tasks_1：mini chat_request_send ×1（+100c+5e）"""
+    st, cur, tgt = prog(s, "Sequential_Tasks_1")
+    if st in ("completed", "claimed"):
+        return
+    conv = "mini-" + str(uuid.uuid4())
+    try:
+        _mini_report(s, uid, nick, conv)
+        time.sleep(3)
+        st, cur, tgt = prog(s, "Sequential_Tasks_1")
+        log("   小程序对话任务: %s %s/%s" % (st, cur, tgt))
+    except Exception as e:
+        log("   小程序对话任务: 失败 %s" % str(e)[:60])
+
+
+def t_school_season(s, uid, nick, log):
+    """小程序成长任务 school_season：mini chat + activityId（+100c+5e）"""
+    st, cur, tgt = prog(s, "school_season")
+    if st in ("completed", "claimed"):
+        return
+    conv = "mini-ss-" + str(uuid.uuid4())
+    rid = str(uuid.uuid4())
+    ev = {"eventCode": "chat_request_send", "timestamp": int(time.time() * 1000),
+          "reportDelay": 0, "source": "mini_program", "ideName": "wx_app_cloud",
+          "ideType": "WorkBuddy_MP", "extName": "workbuddy-mp", "extVersion": "2.4.0",
+          "mode": "chat", "conversationId": conv, "requestId": conv,
+          "inputLength": 12, "requestModelId": "glm-5.2", "requestModelName": "GLM-5.2",
+          "activityId": "school_open_day_2026",
+          "isPlan": False, "codebaseEnable": False, "maxToken": 0, "maxSteps": 0,
+          "temperature": 0, "mentionContexts": [], "knowledgeId": [],
+          "agentName": "default", "agentType": "conversation", "userId": uid}
+    try:
+        report(s, uid, nick, [ev])
+        time.sleep(3)
+        st, cur, tgt = prog(s, "school_season")
+        log("   校园日活动: %s %s/%s" % (st, cur, tgt))
+    except Exception as e:
+        log("   校园日活动: 失败 %s" % str(e)[:60])
+
+
 def t_unknown_tasks(s, uid, nick, log):
     """检测脚本未覆盖的新任务，明确提示"""
     known = {"create_canvas", "playbook_prompt", "RichMeow_Chat", "Library_read", "Expert_lighthouse",
@@ -1749,6 +1838,9 @@ def run_account(idx, acc, do_desktop):
     t_template_5(s, uid, nick, log)
     t_glm52(s, uid, nick, log)
     t_black_cat(s, uid, nick, log)
+    t_lighthouse(s, uid, nick, log)
+    t_sequential_tasks(s, uid, nick, log)
+    t_school_season(s, uid, nick, log)
     t_badges(s, uid, nick, log)
     t_lottery(s, uid, nick, log)
     t_blindbox(s, uid, nick, log)
