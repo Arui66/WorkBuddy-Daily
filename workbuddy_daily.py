@@ -1259,51 +1259,61 @@ def cdp_ui_send(prompt):
 
 
 def t_desktop_tasks(s, uid, nick, tok, log, need_rich, need_skill):
-    """桌面端换血任务：RichMeow(桌面对话) / skill_1(安装并使用技能)"""
-    log("   🖥️ 桌面换血流程启动（结束后自动还原认证并重启桌面端）...")
-    # 技能安装走 API（服务端记录）
-    if need_skill:
-        try:
-            src = s.get(BASE + "/console/as/marketplace/sources", timeout=20, verify=False).json()
-            srcs = src.get("data", {}).get("sources") or []
-            mid = srcs[0].get("id") if srcs else None
-            if mid:
-                s.post(BASE + "/console/as/user/plugins/install",
-                       json={"plugin_name": SKILL_NAME, "marketplace_id": mid, "version": "latest"},
-                       timeout=30, verify=False)
-        except Exception:
-            pass
-    ensure_local_skill()
-    swap_info(tok)
-    url = restart_desktop()
-    if not url:
-        log("   ❌桌面端守护进程未就绪，跳过桌面任务")
+    """桌面端任务：Windows 走真实桌面换血，非 Windows 自动降级为指纹上报。"""
+    is_win = sys.platform == "win32"
+
+    if is_win:
+        # ===== Windows：真实桌面换血流程 =====
+        log("   🖥️ 桌面换血流程启动（结束后自动还原认证并重启桌面端）...")
+        if need_skill:
+            try:
+                src_ = s.get(BASE + "/console/as/marketplace/sources", timeout=20, verify=False).json()
+                srcs = (src_.get("data") or {}).get("sources") or []
+                mid = srcs[0].get("id") if srcs else None
+                if mid:
+                    s.post(BASE + "/console/as/user/plugins/install",
+                           json={"plugin_name": SKILL_NAME, "marketplace_id": mid, "version": "latest"},
+                           timeout=30, verify=False)
+            except Exception:
+                pass
+        ensure_local_skill()
+        swap_info(tok)
+        url = restart_desktop()
+        if not url:
+            log("   ⚠️ 桌面端守护进程未就绪，降级为指纹上报...")
+            restore_info()
+            subprocess.Popen(["cmd", "/c", "start", "", r"C:\Program Files\WorkBuddy\WorkBuddy.exe"])
+            _desktop_fingerprint_fallback(s, uid, nick, log, need_rich, need_skill)
+            return
+        time.sleep(8)
+        if need_rich:
+            txt = daemon_chat("你好，请用一句话介绍你自己")
+            if not txt:
+                log("   守护进程会话未就绪，改用 CDP UI 发送...")
+                cdp_ui_send("你好，请用一句话介绍你自己")
+            log("   桌面对话: %s字" % len(txt))
+            time.sleep(8)
+        if need_skill:
+            blocks = [{"type": "resource_link", "uri": "skill://" + SKILL_NAME, "title": SKILL_NAME,
+                       "name": SKILL_NAME, "_meta": {"mentionType": "skill", "skillName": SKILL_NAME}},
+                      {"type": "text", "text": "你必须通过技能系统正式加载（load）该技能，加载成功后回答：技能已加载"}]
+            txt = daemon_chat("", blocks=blocks)
+            if not txt:
+                log("   守护进程不可用，改用 CDP UI 技能调用...")
+                cdp_ui_send("/" + SKILL_NAME + " 请按技能说明回答OK")
+            log("   技能加载: %s" % ("成功" if "加载" in txt else "回复%d字" % len(txt)))
+            time.sleep(8)
         restore_info()
+        subprocess.run(["taskkill", "/F", "/IM", "WorkBuddy.exe"], capture_output=True)
+        time.sleep(3)
         subprocess.Popen(["cmd", "/c", "start", "", r"C:\Program Files\WorkBuddy\WorkBuddy.exe"])
+        time.sleep(5)
+    else:
+        # ===== 非 Windows：指纹上报降级 =====
+        log("   🖥️ 非 Windows 环境，使用指纹上报模式...")
+        _desktop_fingerprint_fallback(s, uid, nick, log, need_rich, need_skill)
         return
-    time.sleep(8)
-    if need_rich:
-        txt = daemon_chat("你好，请用一句话介绍你自己")
-        if not txt:
-            log("   守护进程会话未就绪，改用 CDP UI 发送...")
-            cdp_ui_send("你好，请用一句话介绍你自己")
-        log("   桌面对话: %s字" % len(txt))
-        time.sleep(8)
-    if need_skill:
-        blocks = [{"type": "resource_link", "uri": "skill://" + SKILL_NAME, "title": SKILL_NAME,
-                   "name": SKILL_NAME, "_meta": {"mentionType": "skill", "skillName": SKILL_NAME}},
-                  {"type": "text", "text": "你必须通过技能系统正式加载（load）该技能，加载成功后回答：技能已加载"}]
-        txt = daemon_chat("", blocks=blocks)
-        if not txt:
-            log("   守护进程不可用，改用 CDP UI 技能调用...")
-            cdp_ui_send("/" + SKILL_NAME + " 请按技能说明回答OK")
-        log("   技能加载: %s" % ("成功" if "加载" in txt else "回复%d字" % len(txt)))
-        time.sleep(8)
-    restore_info()
-    subprocess.run(["taskkill", "/F", "/IM", "WorkBuddy.exe"], capture_output=True)
-    time.sleep(3)
-    subprocess.Popen(["cmd", "/c", "start", "", r"C:\Program Files\WorkBuddy\WorkBuddy.exe"])
-    time.sleep(5)
+
     if need_rich:
         st, cur, tgt = prog(s, "RichMeow_Chat")
         log("   桌面端对话1次: %s %s/%s" % (st, cur, tgt))
@@ -1314,6 +1324,56 @@ def t_desktop_tasks(s, uid, nick, tok, log, need_rich, need_skill):
         log("   尝鲜热门技能: %s %s/%s" % (st, cur, tgt))
         if st == "completed":
             claim(s, "skill_1", log)
+
+
+def _desktop_fingerprint_fallback(s, uid, nick, log, need_rich, need_skill):
+    """桌面任务指纹降级：desktop_chat_sequence + skill_info 事件（task_runner 同款，无需真实桌面端）。"""
+    if need_rich:
+        conv = "fp-rm-%s" % derive_id(uid, "rm-conv")
+        req = "fp-rm-req-%s" % derive_id(uid, "rm-req")
+        msg = "fp-rm-msg-%s" % derive_id(uid, "rm-msg")
+        try:
+            evs = desktop_chat_sequence(uid, nick, conv, req, msg)
+            report_desktop_events(s, uid, nick, evs)
+            log("   桌面对话(指纹): ✅ 6连事件已上报")
+            time.sleep(WRITE_GAP)
+        except Exception as e:
+            log("   桌面对话(指纹): 失败 %s" % str(e)[:60])
+    if need_skill:
+        # 技能：先用 API 安装，再发 skill_info 事件
+        try:
+            src_ = s.get(BASE + "/console/as/marketplace/sources", timeout=20, verify=False).json()
+            srcs = (src_.get("data") or {}).get("sources") or []
+            mid = srcs[0].get("id") if srcs else None
+            if mid:
+                s.post(BASE + "/console/as/user/plugins/install",
+                       json={"plugin_name": SKILL_NAME, "marketplace_id": mid, "version": "latest"},
+                       timeout=30, verify=False)
+        except Exception:
+            pass
+        try:
+            # 获取技能 ID
+            skills_r = api_retry(s, "POST", SCHOOL_DOMAIN + "/v2/operation-platform/market/skill/list",
+                                 body={"page": 1, "page_size": 10})
+            skills = (skills_r.json().get("data") or {}).get("skills") or []
+            skill_id = next((sk.get("id") for sk in skills if SKILL_NAME in str(sk.get("name", ""))), "")
+            if not skill_id:
+                skill_id = "skill-" + derive_id(uid, "skill")[:12]
+            rid = str(uuid.uuid4())
+            ev = {"eventCode": "skill_info", "skillId": skill_id, "skillName": SKILL_NAME,
+                  "timestamp": int(time.time() * 1000), "reportDelay": 0,
+                  "mode": "LOCAL", "source": "builtin", "userId": uid}
+            report_desktop_events(s, uid, nick, [ev])
+            log("   尝鲜热门技能(指纹): ✅ skill_info 已上报")
+            time.sleep(WRITE_GAP)
+        except Exception as e:
+            log("   尝鲜热门技能(指纹): 失败 %s" % str(e)[:60])
+    # claim
+    for code in (["RichMeow_Chat"] if need_rich else []) + (["skill_1"] if need_skill else []):
+        st, cur, tgt = prog(s, code)
+        log("   %s: %s %s/%s" % (code, st, cur, tgt))
+        if st == "completed":
+            claim(s, code, log)
 
 
 
@@ -2205,8 +2265,7 @@ def main():
     print("👥 账号数: %d" % len(ACCOUNTS))
     do_desktop = not NO_DESKTOP
     if do_desktop and sys.platform != "win32":
-        print("⚠️ 非Windows环境(青龙/云服务器)，自动跳过桌面任务(RichMeow/技能需一次性在Windows桌面端完成)")
-        do_desktop = False
+        print("🖥️ 非Windows环境：桌面任务自动降级为指纹上报模式")
     all_msgs = []
     summaries = []
     if SCHOOL_ONLY:
