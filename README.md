@@ -319,6 +319,17 @@ WorkBuddy-Daily/
 
 ---
 
+## 💬 反馈与贡献
+
+遇到问题、有功能建议，或者发现了更好的实现方式，欢迎：
+
+- 提交 [Issue](https://github.com/L0NE-6/WorkBuddy-Daily/issues) —— 报 bug、提需求
+- 发起 [Pull Request](https://github.com/L0NE-6/WorkBuddy-Daily/pulls) —— 直接贡献代码
+
+> 提 Issue 时如果能附上**运行日志**和**复现步骤**，定位会快很多 🙏
+
+---
+
 <div align="center">
   <sub>🌱 如果这个脚本帮到你，点个 <b>Star</b> 支持一下 ✨</sub>
 </div>
