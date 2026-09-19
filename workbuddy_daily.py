@@ -803,20 +803,25 @@ def t_black_cat(s, uid, nick, log):
     if st in ("completed", "claimed"):
         return
     if not within_night_window():
-        hour = time.localtime().tm_hour
-        log("   夜猫子: 仅23:00-08:00计数（CST），当前%d点，跳过" % hour)
+        # 显式用北京时间：GitHub Actions runner 是 UTC，localtime() 会误导排查
+        log("   夜猫子: 仅23:00-08:00计数（CST），当前北京时间%d点，跳过" % beijing_now().hour)
         return
-    need = (tgt or 3) - (cur or 0)
-    for i in range(max(0, need)):
-        conv_id, txt = webchat(s, "night", ["今天天气怎么样？", "1+1等于几？", "讲个笑话"][i % 3])
+    prompts = ["今天天气怎么样？", "1+1等于几？", "讲个笑话"]
+    # 最多 8 次尝试直到 3/3：单次对话失败不再永久卡死（每轮复查进度，完成即停）
+    for attempt in range(8):
+        st, cur, tgt = prog(s, "black_cat")
+        if st in ("completed", "claimed") or (cur or 0) >= (tgt or 3):
+            break
+        conv_id, txt = webchat(s, "night", prompts[attempt % len(prompts)])
         if txt:
             evs, _ = chat_request_events(uid, nick, conv_id, "聊天", txt)
             report(s, uid, nick, evs)
+            log("   夜猫子: 第%d次对话 ✅（回复%d字）" % (attempt + 1, len(txt)))
+        else:
+            log("   夜猫子: 第%d次对话 ❌（无回复，将重试）" % (attempt + 1))
         time.sleep(5)
-        st, cur, tgt = prog(s, "black_cat")
-        if st in ("completed", "claimed"):
-            break
-    log("   夜猫子: %s %s/%s" % (prog(s, "black_cat")[0], prog(s, "black_cat")[1], prog(s, "black_cat")[2]))
+    st, cur, tgt = prog(s, "black_cat")
+    log("   夜猫子: %s %s/%s" % (st, cur, tgt))
 
 
 def t_expert_5(s, uid, nick, log):
@@ -1420,7 +1425,7 @@ def t_makeup(s, uid, nick, log):
         hm = s.get(BASE + "/v2/activity/growth/heatmap", timeout=20, verify=False).json()
         cells = hm.get("data", {}).get("cells", [])
         bal = s.get(BASE + "/v2/activity/growth/streak", timeout=20, verify=False).json().get("data", {}).get("makeup_cards", {}).get("balance", 0)
-        yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+        yesterday = (beijing_today() - datetime.timedelta(days=1)).isoformat()
         missed = None
         for c in cells:
             d = str(c.get("date", ""))[:10]
@@ -2004,11 +2009,20 @@ def desktop_fingerprint(uid, nick):
 def within_night_window():
     """CST 夜猫窗口 23:00 - 次日 08:00"""
     try:
-        import datetime as _dt
-        now = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=8)))
-        return now.hour >= 23 or now.hour < 8
+        return beijing_now().hour >= 23 or beijing_now().hour < 8
     except Exception:
         return None
+
+
+def beijing_now():
+    """北京时间（UTC+8）。不依赖系统 TZ：Actions runner 是 UTC，直接用会算错日期。"""
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=8)))
+
+
+def beijing_today():
+    """北京日期（date 对象）。补签等日期逻辑必须用它，不能用 date.today()。"""
+    return beijing_now().date()
 
 
 def desktop_chat_sequence(uid, nick, conversation_id, request_id, message_id,
