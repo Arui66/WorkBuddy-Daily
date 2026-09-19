@@ -752,7 +752,11 @@ def t_buddy_apps(s, uid, nick, log):
 
 def t_theme(s, uid, nick, log):
     st, cur, tgt = prog(s, "Hp_Appearance")
+    if st is None:
+        log("   和平精英主题: 不在任务列表，跳过")
+        return
     if st in ("completed", "claimed"):
+        log("   和平精英主题: 已 %s" % st)
         return
     r = s.post(BASE + "/portal/user-asset/appearance/set", json={"kind": "theme", "resource_key": THEME_KEY},
                timeout=20, verify=False)
@@ -767,7 +771,11 @@ def t_theme(s, uid, nick, log):
 
 def t_library(s, uid, nick, log):
     st, cur, tgt = prog(s, "Library_read")
+    if st is None:
+        log("   体验资料库: 不在任务列表，跳过")
+        return
     if st in ("completed", "claimed"):
+        log("   体验资料库: 已 %s" % st)
         return
     report_web_event(s, uid, nick, "web_element_click", LIB_DOC_URL,
                      "library_doc_intro_click", "WorkBuddy资料库介绍")
@@ -1480,7 +1488,11 @@ def t_workstation(s, uid, nick, log, tok):
 def t_lighthouse(s, uid, nick, log):
     """腾讯轻量云专家：拉取专家 → 伪造 expert_actual_use 上报（M15 同款）"""
     st, cur, tgt = prog(s, "Expert_lighthouse")
+    if st is None:
+        log("   腾讯轻量云专家: 不在当前任务列表，跳过")
+        return
     if st in ("completed", "claimed"):
+        log("   腾讯轻量云专家: %s %s/%s" % (st, cur, tgt))
         return
     try:
         experts = get_normal_experts(20)
@@ -1505,8 +1517,53 @@ def t_lighthouse(s, uid, nick, log):
         log("   腾讯轻量云专家: 失败 %s" % str(e)[:60])
 
 
+MP_HEADER = {"X-Client-Platform": "miniprogram",
+             "User-Agent": "Mozilla/5.0 (Linux; Android 14; MicroMessenger/8.0.49 WeChat/0.8.0 "
+                           "MiniProgramEnv/android; wkbrowser xweb)"}
+
+
+def _mp_prog(s, code):
+    """小程序口径查询任务（需 X-Client-Platform: miniprogram，否则任务不下发）。"""
+    try:
+        r = s.get(BASE + "/v2/activity/growth/tasks", timeout=25, verify=False, headers=MP_HEADER)
+        for t in r.json().get("data", {}).get("tasks", []):
+            if t.get("task_code") == code:
+                pr = t.get("progress") or {}
+                return t.get("accept_status", ""), pr.get("current"), pr.get("target")
+    except Exception:
+        pass
+    return None, None, None
+
+
+def _mp_accept(s, code):
+    """小程序口径接受任务（缺头会返回 task not found）。"""
+    try:
+        r = s.post(BASE + "/v2/activity/growth/tasks/accept", json={"task_codes": [code]},
+                   timeout=20, verify=False, headers=MP_HEADER)
+        d = r.json()
+        results = (d.get("data") or {}).get("results") or []
+        status = (results[0].get("status") or "") if results else (d.get("msg") or "")
+        return r.status_code == 200 and status == "accepted"
+    except Exception:
+        return False
+
+
+def _mp_claim(s, code, log):
+    """小程序口径领奖（缺头会 400）。"""
+    try:
+        r = s.post(BASE + "/activity/growth/tasks/%s/claim" % code, json={},
+                   timeout=20, verify=False, headers=MP_HEADER)
+        d = r.json().get("data", {})
+        log("   🎁领奖[%s]: %s" % (code, "已领过" if d.get("already_claimed")
+                                   else "+%s积分+%s能量" % (d.get("credit"), d.get("energy"))))
+        return r.status_code == 200
+    except Exception as e:
+        log("   🎁领奖[%s]: 失败 %s" % (code, str(e)[:50]))
+        return False
+
+
 def _mini_report(s, uid, nick, conv_id):
-    """小程序指纹 chat_request_send 上报（Sequential_Tasks_1 / school_season 判据）。"""
+    """小程序指纹 chat_request_send 上报（copilot.tencent.com 域 + miniprogram 头）。"""
     rid = str(uuid.uuid4())
     ev = {"eventCode": "chat_request_send", "timestamp": int(time.time() * 1000),
           "reportDelay": 0, "source": "mini_program", "ideName": "wx_app_cloud",
@@ -1516,45 +1573,103 @@ def _mini_report(s, uid, nick, conv_id):
           "isPlan": False, "codebaseEnable": False, "maxToken": 0, "maxSteps": 0,
           "temperature": 0, "mentionContexts": [], "knowledgeId": [],
           "agentName": "default", "agentType": "conversation", "userId": uid}
-    return report(s, uid, nick, [ev])
+    mp_s = requests.Session()
+    mp_s.trust_env = False
+    mp_s.headers.update({"Authorization": "Bearer " + s.headers.get("Authorization", "").replace("Bearer ", ""),
+                         "Content-Type": "application/json", "Accept": "application/json",
+                         "User-Agent": "Mozilla/5.0 (Linux; Android 14; MicroMessenger/8.0.49 WeChat/0.8.0 MiniProgramEnv/android; wkbrowser xweb)",
+                         "X-Client-Platform": "miniprogram"})
+    try:
+        r = mp_s.post("https://copilot.tencent.com/v2/report", json={"common": {
+            "userId": uid, "userNickname": nick, "ideName": "wx_app_cloud",
+            "ideType": "WorkBuddy_MP", "machineId": derive_id(uid, "mp-machine"),
+            "mode": "chat", "userAgent": MP_UA, "os": "Android",
+            "timezone": "Asia/Shanghai"}, "events": [ev]}, timeout=20, verify=False)
+        return r.status_code
+    except Exception:
+        return 0
 
 
 def t_sequential_tasks(s, uid, nick, log):
-    """小程序成长任务 Sequential_Tasks_1：mini chat_request_send ×1（+100c+5e）"""
-    st, cur, tgt = prog(s, "Sequential_Tasks_1")
-    if st in ("completed", "claimed"):
+    """小程序成长任务 Sequential_Tasks_1：mp口径查询→accept→mini上报→回读→claim（+100c+5e）"""
+    st, cur, tgt = _mp_prog(s, "Sequential_Tasks_1")
+    if st is None:
+        log("   小程序对话任务: mp 口径未下发该任务，跳过")
         return
+    if st in ("completed", "claimed"):
+        if st == "completed":
+            _mp_claim(s, "Sequential_Tasks_1", log)
+        else:
+            log("   小程序对话任务: 已领取，跳过")
+        return
+    if st == "not_accepted":
+        if not _mp_accept(s, "Sequential_Tasks_1"):
+            log("   小程序对话任务: accept 失败，跳过")
+            return
+        time.sleep(WRITE_GAP)
     conv = "mini-" + str(uuid.uuid4())
     try:
         _mini_report(s, uid, nick, conv)
-        time.sleep(3)
-        st, cur, tgt = prog(s, "Sequential_Tasks_1")
-        log("   小程序对话任务: %s %s/%s" % (st, cur, tgt))
+        log("   小程序对话任务: mini chat 已上报")
+        time.sleep(2.5)
+        st2, cur2, tgt2 = _mp_prog(s, "Sequential_Tasks_1")
+        if st2 in ("completed", "claimed"):
+            log("   小程序对话任务: ✅ 已完成 %s/%s" % (cur2, tgt2))
+            if st2 == "completed":
+                _mp_claim(s, "Sequential_Tasks_1", log)
+        else:
+            log("   小程序对话任务: %s %s/%s（服务端暂未关联）" % (st2, cur2, tgt2))
     except Exception as e:
         log("   小程序对话任务: 失败 %s" % str(e)[:60])
 
 
 def t_school_season(s, uid, nick, log):
-    """小程序成长任务 school_season：mini chat + activityId（+100c+5e）"""
-    st, cur, tgt = prog(s, "school_season")
-    if st in ("completed", "claimed"):
+    """小程序成长任务 school_season：mp口径查询→accept→mini chat+activityId→回读→claim（+100c+5e）"""
+    st, cur, tgt = _mp_prog(s, "school_season")
+    if st is None:
+        log("   校园日活动: mp 口径未下发该任务，跳过")
         return
+    if st in ("completed", "claimed"):
+        if st == "completed":
+            _mp_claim(s, "school_season", log)
+        else:
+            log("   校园日活动: 已领取，跳过")
+        return
+    if st == "not_accepted":
+        if not _mp_accept(s, "school_season"):
+            log("   校园日活动: accept 失败，跳过")
+            return
+        time.sleep(WRITE_GAP)
     conv = "mini-ss-" + str(uuid.uuid4())
-    rid = str(uuid.uuid4())
     ev = {"eventCode": "chat_request_send", "timestamp": int(time.time() * 1000),
           "reportDelay": 0, "source": "mini_program", "ideName": "wx_app_cloud",
           "ideType": "WorkBuddy_MP", "extName": "workbuddy-mp", "extVersion": "2.4.0",
           "mode": "chat", "conversationId": conv, "requestId": conv,
           "inputLength": 12, "requestModelId": "glm-5.2", "requestModelName": "GLM-5.2",
-          "activityId": "school_open_day_2026",
+          "activityId": SCHOOL_ACTIVITY_ID,
           "isPlan": False, "codebaseEnable": False, "maxToken": 0, "maxSteps": 0,
           "temperature": 0, "mentionContexts": [], "knowledgeId": [],
           "agentName": "default", "agentType": "conversation", "userId": uid}
     try:
-        report(s, uid, nick, [ev])
-        time.sleep(3)
-        st, cur, tgt = prog(s, "school_season")
-        log("   校园日活动: %s %s/%s" % (st, cur, tgt))
+        mp_s = requests.Session(); mp_s.trust_env = False
+        mp_s.headers.update({"Authorization": "Bearer " + s.headers.get("Authorization", "").replace("Bearer ", ""),
+                             "Content-Type": "application/json", "Accept": "application/json",
+                             "X-Client-Platform": "miniprogram",
+                             "User-Agent": "Mozilla/5.0 (Linux; Android 14; MicroMessenger/8.0.49 WeChat/0.8.0 MiniProgramEnv/android; wkbrowser xweb)"})
+        mp_s.post("https://copilot.tencent.com/v2/report", json={"common": {
+            "userId": uid, "userNickname": nick, "ideName": "wx_app_cloud",
+            "ideType": "WorkBuddy_MP", "machineId": derive_id(uid, "mp-machine"),
+            "mode": "chat", "userAgent": MP_UA, "os": "Android",
+            "timezone": "Asia/Shanghai"}, "events": [ev]}, timeout=20, verify=False)
+        log("   校园日活动: mini chat+activityId 已上报")
+        time.sleep(2.5)
+        st2, cur2, tgt2 = _mp_prog(s, "school_season")
+        if st2 in ("completed", "claimed"):
+            log("   校园日活动: ✅ 已完成 %s/%s" % (cur2, tgt2))
+            if st2 == "completed":
+                _mp_claim(s, "school_season", log)
+        else:
+            log("   校园日活动: %s %s/%s（服务端暂未关联）" % (st2, cur2, tgt2))
     except Exception as e:
         log("   校园日活动: 失败 %s" % str(e)[:60])
 
@@ -1625,13 +1740,22 @@ def _school_post(s, url, body=None):
     return api_retry(s, "POST", url, body=body)
 
 
-def _school_report(s, uid, nick, events):
-    """向 codebuddy.cn/v2/report 上报开学季事件（带 activityId）。"""
+def _school_report(s, uid, nick, events, host=None, desktop=False):
+    """开学季事件上报。host 默认 codebuddy.cn；desktop=True 时走 copilot 域（桌面任务判据）。"""
+    target = host or SCHOOL_DOMAIN
+    if desktop:
+        out = {"common": {"userId": uid, "userNickname": nick, "ideName": "WorkBuddy",
+                          "ideType": "WorkBuddy", "machineId": derive_id(uid, "machine"),
+                          "mode": "LOCAL", "userAgent": UA, "os": "win32",
+                          "timezone": "Asia/Shanghai"},
+               "events": events}
+        return api_retry(s, "POST", "https://copilot.tencent.com/v2/report", body=out,
+                         headers={"X-Product": "SaaS"})
     out = {"common": {"userId": uid, "userNickname": nick, "ideName": "web-Agents",
                       "ideType": "web-Agents", "machineId": derive_id(uid, "machine"), "mode": "CLOUD",
                       "userAgent": MP_UA, "os": "Android", "timezone": "Asia/Shanghai"},
            "events": events}
-    return api_retry(s, "POST", SCHOOL_DOMAIN + "/v2/report", body=out)
+    return api_retry(s, "POST", target + "/v2/report", body=out)
 
 
 def _school_fetch_expert(s):
@@ -1653,48 +1777,46 @@ def _school_fetch_expert(s):
 
 
 def _school_mini_chat_event(uid, nick, conv_id):
+    """返回纯事件列表（信封由 _school_report 统一包装）。"""
     rid = str(uuid.uuid4())
-    return {"common": {"userId": uid, "userNickname": nick, "ideName": "web-Agents",
-                       "ideType": "web-Agents", "machineId": derive_id(uid, "machine"), "mode": "CLOUD",
-                       "userAgent": MP_UA, "os": "Android", "timezone": "Asia/Shanghai"},
-            "events": [{"eventCode": "chat_request_send", "timestamp": int(time.time() * 1000),
-                        "activityId": SCHOOL_ACTIVITY_ID, "conversationId": conv_id,
-                        "requestId": rid, "messageId": "msg-" + rid,
-                        "requestModelId": "glm-5.2", "requestModelName": "GLM-5.2",
-                        "inputLength": 20, "customAgentName": "", "mentionContexts": [],
-                        "mentionContextCount": 0}]}
+    return [{"eventCode": "chat_request_send", "timestamp": int(time.time() * 1000),
+             "reportDelay": 0, "source": "mini_program", "ideName": "wx_app_cloud",
+             "ideType": "WorkBuddy_MP", "extName": "workbuddy-mp", "extVersion": "2.4.0",
+             "mode": "chat", "activityId": SCHOOL_ACTIVITY_ID,
+             "conversationId": conv_id, "requestId": conv_id, "messageId": "msg-" + rid,
+             "requestModelId": "glm-5.2", "requestModelName": "GLM-5.2",
+             "inputLength": 12, "mentionContexts": [], "mentionContextCount": 0,
+             "isPlan": False, "codebaseEnable": False, "maxToken": 0, "maxSteps": 0,
+             "temperature": 0, "agentName": "default", "agentType": "conversation",
+             "userId": uid}]
 
 
 def _school_desktop_seq_event(uid, nick, conv_id):
-    """模拟一次桌面对话的 6 连指纹事件 + activityId。"""
-    base_ts = int(time.time() * 1000)
-    mid = hashlib.md5((uid + "school").encode()).hexdigest()
-    rid = str(uuid.uuid4()); mid_msg = "msg-" + rid
-    def mk(code, extra=None):
-        ev = {"eventCode": code, "timestamp": base_ts, "activityId": SCHOOL_ACTIVITY_ID,
-              "userId": uid, "userNickname": nick, "machineId": mid,
-              "requestId": rid, "messageId": mid_msg, "conversationId": conv_id}
-        if extra: ev.update(extra)
-        return ev
-    return [mk("wbx_app_launch"), mk("wbx_desktop_ready"), mk("chat_request_send",
-            {"requestModelId": "glm-5.2", "inputLength": 20}),
-            mk("chat_response_received", {"requestModelId": "glm-5.2"}),
-            mk("wbx_session_end"), mk("wbx_app_close")]
+    """模拟一次桌面对话的 6 连指纹事件 + activityId（走 desktop_chat_sequence 同款形状）。"""
+    evs = desktop_chat_sequence(uid, nick, conv_id, conv_id, conv_id)
+    fp = desktop_fingerprint(uid, nick)
+    out = []
+    for e in evs:
+        m = dict(e)
+        m.update(fp)
+        m["activityId"] = SCHOOL_ACTIVITY_ID
+        out.append(m)
+    return out
 
 
 def _school_expert_event(uid, nick, expert_id, expert_name, conv_id):
     rid = str(uuid.uuid4()); mid_msg = "msg-" + rid
-    return {"common": {"userId": uid, "userNickname": nick, "ideName": "web-Agents",
-                       "ideType": "web-Agents", "machineId": derive_id(uid, "machine"), "mode": "CLOUD",
-                       "userAgent": MP_UA, "os": "Android", "timezone": "Asia/Shanghai"},
-            "events": [{"eventCode": "expert_summoned", "id": expert_id, "name": expert_name,
-                        "type": "agent", "source": "builtin", "timestamp": int(time.time() * 1000),
-                        "activityId": SCHOOL_ACTIVITY_ID},
-                       {"eventCode": "expert_actual_use", "id": expert_id, "name": expert_name,
-                        "type": "agent", "expertType": "agent", "source": "builtin",
-                        "cost": 5, "characterCount": 20, "requestId": rid, "messageId": mid_msg,
-                        "conversationId": conv_id, "timestamp": int(time.time() * 1000),
-                        "activityId": SCHOOL_ACTIVITY_ID}]}
+    now = int(time.time() * 1000)
+    return [{"eventCode": "expert_summoned", "id": expert_id, "name": expert_name,
+             "type": "agent", "expertType": "agent", "source": "builtin",
+             "version": "", "reportDelay": 0, "timestamp": now,
+             "activityId": SCHOOL_ACTIVITY_ID, "userId": uid},
+            {"eventCode": "expert_actual_use", "id": expert_id, "name": expert_name,
+             "expertTitle": expert_name, "type": "agent", "expertType": "agent", "source": "builtin",
+             "version": "", "cost": 0, "characterCount": 12, "reportDelay": 0,
+             "requestId": rid, "messageId": mid_msg, "conversationId": conv_id,
+             "requestModelId": "deepseek-v4-flash", "requestModelName": "DeepSeek V4 Flash",
+             "timestamp": now, "activityId": SCHOOL_ACTIVITY_ID, "userId": uid}]
 
 
 def _school_fetch_tasks(s):
@@ -1768,7 +1890,7 @@ def school_run_tasks(s, uid, nick, log):
                 for i in range(3):
                     ev = _school_mini_chat_event(uid, nick, conv_id)
                     try:
-                        _school_report(s, uid, nick, ev["events"])
+                        _school_report(s, uid, nick, ev)
                         log("   %s: chat #%d/3 ✅" % (code, i + 1))
                         time.sleep(WRITE_GAP)
                     except Exception as e:
@@ -1776,8 +1898,8 @@ def school_run_tasks(s, uid, nick, log):
             elif kind == "desktop_seq":
                 evs = _school_desktop_seq_event(uid, nick, conv_id)
                 try:
-                    _school_report(s, uid, nick, evs)
-                    log("   %s: desktop_seq ✅" % code)
+                    _school_report(s, uid, nick, evs, desktop=True)
+                    log("   %s: desktop_seq (copilot域) ✅" % code)
                     time.sleep(WRITE_GAP)
                 except Exception as e:
                     log("   %s: desktop 失败 %s" % (code, str(e)[:60]))
@@ -1786,7 +1908,7 @@ def school_run_tasks(s, uid, nick, log):
                 if eid:
                     ev = _school_expert_event(uid, nick, eid, ename, conv_id)
                     try:
-                        _school_report(s, uid, nick, ev["events"])
+                        _school_report(s, uid, nick, ev)
                         log("   %s: expert_use ✅ (%s)" % (code, ename))
                         time.sleep(WRITE_GAP)
                     except Exception as e:
