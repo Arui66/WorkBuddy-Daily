@@ -35,7 +35,7 @@
 | :---: | :--- |
 | **1️⃣ 上传脚本** | 把 `workbuddy_daily.py` 放到脚本目录 |
 | **2️⃣ 设置变量** | `WORKBUDDY_REFRESH_TOKEN` = 每行一个 `手机号:AT:RT`（多账号换行分隔） |
-| **3️⃣ 定时任务** | 日常 `0 7,12 * * *` · 夜猫子窗口 `30 23 * * *` |
+| **3️⃣ 定时任务** | 日常 `0 7,12 * * *` · 夜猫子窗口 `30 23 * * *`（**青龙用本地时间**） |
 
 ```bash
 # 依赖（仅一个）
@@ -152,7 +152,7 @@ python workbuddy_login.py --verify           # 登录后额外验证 RT 是否�
 python workbuddy_daily.py                # 全流程：续期 → 查询 → 任务 → 开学季 → 领奖
 python workbuddy_daily.py --refresh      # 仅刷新所有账号 Token
 python workbuddy_daily.py --query        # 仅查询积分/用量/成长
-python workbuddy_daily.py --no-desktop   # 跳过桌面任务（非 Windows 自动生效）
+python workbuddy_daily.py --no-desktop   # 跳过桌面任务（非 Windows 默认走指纹上报，此参数可彻底跳过）
 python workbuddy_daily.py --no-school    # 跳过开学季活动
 python workbuddy_daily.py --school-only  # 只跑开学季活动（不做成长中心任务）
 python workbuddy_daily.py --only 3       # 只跑第 3 个账号
@@ -181,8 +181,8 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 | :-: | :--- | :--- |
 | 1 | 设计创意模式 | 造画布事件上报 |
 | 2 | 探索优秀灵感 | playbook 事件上报 |
-| 3 | 桌面端对话 | Windows 真实桌面 / 非 Windows 指纹上报 |
-| 4 | 尝鲜热门技能 | Windows 真实桌面 / 非 Windows 指纹上报 |
+| 3 | 桌面端对话 | Windows 真实桌面 / 非 Windows 指纹上报（**无需真实桌面端**） |
+| 4 | 尝鲜热门技能 | Windows 真实桌面 / 非 Windows 指纹上报（**无需真实桌面端**） |
 | 5 | 体验资料库 | web 域点击事件 |
 | 6 | 腾讯轻量云专家 | expert 事件上报 |
 | 7 | 和平精英主题 | 主题切换 API + 遥测 |
