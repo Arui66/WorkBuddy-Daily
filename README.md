@@ -4,7 +4,7 @@
 
 **WorkBuddy 成长中心 · 全能签到脚本 · 单文件自包含**
 
-🔐 Token 永续 · ✅ 33 项自动化任务 · ☁️ 云端任务 · 🏫 开学季活动 · 📱 小程序任务 · 🖥️ 桌面换血 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📊 全中文报告 · 📢 内置推送 · 🐧 青龙友好 · ☁️ GitHub Actions
+🔐 Token 永续 · ✅ 33 项自动化任务 · 🏫 开学季活动 · 📱 小程序任务 · 🖥️ 桌面换血 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📊 全中文报告 · 📢 内置推送 · 🐧 青龙友好 · ☁️ GitHub Actions
 
 <img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white" />
 <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20%E9%9D%92%E9%BE%99-4EAA25?style=for-the-badge&logo=linux&logoColor=white" />
@@ -72,6 +72,8 @@ Actions → 左侧选 **🌱 WorkBuddy Daily** → **Run workflow** → 选 `mai
 | 23:30 | `30 15 * * *` | 夜猫子活动窗口 |
 
 > 需要改时间，编辑 `workbuddy.yml` 里的 `cron`（**注意是 UTC，北京时间 − 8 小时**）。
+>
+> 🕐 工作流已设置 `TZ: Asia/Shanghai`——否则 runner 默认 UTC，会导致**日志时间显示错误**和**补签日期算错一天**。脚本内部也用 `beijing_now()` / `beijing_today()` 强制北京时间，双保险。
 
 ### ⚠️ 令牌状态与安全（重要）
 - 脚本每次续期都会**轮换刷新令牌**并写入 `wb_refresh_tokens.json`。
@@ -179,21 +181,21 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 | :-: | :--- | :--- |
 | 1 | 设计创意模式 | 造画布事件上报 |
 | 2 | 探索优秀灵感 | playbook 事件上报 |
-| 3 | 桌面端对话 1 次 | Windows 真实桌面 / 非 Windows 指纹上报 |
+| 3 | 桌面端对话 | Windows 真实桌面 / 非 Windows 指纹上报 |
 | 4 | 尝鲜热门技能 | Windows 真实桌面 / 非 Windows 指纹上报 |
 | 5 | 体验资料库 | web 域点击事件 |
 | 6 | 腾讯轻量云专家 | expert 事件上报 |
 | 7 | 和平精英主题 | 主题切换 API + 遥测 |
 | 8 | 发现应用 | Buddy 五连事件链 |
 | 9 | 企鹅教师助手 | Buddy 五连事件链 |
-| 10 | GLM-5.2 模型对话 | 真实 AI 对话 |
-| 11 | 和 AI 聊天 5 次 | 真实 AI 对话 |
+| 10 | GLM-5.2模型对话 | 真实 AI 对话 |
+| 11 | 和AI聊天5次 | 真实 AI 对话 |
 | 12 | 夜猫子活动 | 真实对话 + 23:00-08:00 窗口（含重试） |
-| 13 | 召唤 3 次专家团 | 真实团队对话 + 遥测 |
-| 14 | 召唤 5 次专家 | expert 事件上报 |
-| 15 | 使用 5 个模板 | 批量遥测上报 |
+| 13 | 召唤3次专家团 | 真实团队对话 + 遥测 |
+| 14 | 召唤5次专家 | expert 事件上报 |
+| 15 | 使用5个模板 | 批量遥测上报 |
 | 16 | 设置自动化任务 | automation 事件上报 |
-| 17 | 领取 Buddy | 领养链路（+300c+8e） |
+| 17 | 领取Buddy | 领养链路（+300c+8e） |
 | 18 | 工作台搭建师 | Windows 桌面 / 非 Windows 跳过 |
 | 19 | ~~公益专家~~ | ❌ **需真实捐款，脚本不做** |
 
