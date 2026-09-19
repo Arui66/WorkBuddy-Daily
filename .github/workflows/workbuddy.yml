@@ -19,6 +19,8 @@ jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      TZ: Asia/Shanghai   # runner 默认 UTC：不加会把日志时间与补签日期算错一天
     steps:
       - name: Checkout
         uses: actions/checkout@v4
