@@ -122,6 +122,10 @@ TASK_NAME_CN = {
     "template_5": "使用5个模板",
     "automation_1": "设置自动化任务",
     "workstation_expert": "工作台搭建师",
+    "wb_wechat_oa_subscribe_task": "关注公众号",
+    "Sequential_Tasks_1": "小程序对话",
+    "Sequential_Tasks_2": "小程序专家对话",
+    "school_season": "校园日活动",
 }
 
 def task_cn(code):
@@ -1678,12 +1682,78 @@ def t_school_season(s, uid, nick, log):
         log("   校园日活动: 失败 %s" % str(e)[:60])
 
 
+def t_sequential_tasks_2(s, uid, nick, log):
+    """小程序成长任务 Sequential_Tasks_2：选中专家 + mini 对话（+200c+5e）
+
+    判据：在小程序内「选中专家并完成有效对话」——事件需带 expertId，
+    走 mp 口径（X-Client-Platform: miniprogram）+ copilot 域上报。
+    """
+    st, cur, tgt = _mp_prog(s, "Sequential_Tasks_2")
+    if st is None:
+        log("   小程序专家对话: mp 口径未下发该任务，跳过")
+        return
+    if st in ("completed", "claimed"):
+        if st == "completed":
+            _mp_claim(s, "Sequential_Tasks_2", log)
+        else:
+            log("   小程序专家对话: 已领取，跳过")
+        return
+    if st == "not_accepted":
+        if not _mp_accept(s, "Sequential_Tasks_2"):
+            log("   小程序专家对话: accept 失败，跳过")
+            return
+        time.sleep(WRITE_GAP)
+    # 拉取一个可用专家（复用市场接口），失败则用兜底 id
+    try:
+        experts = get_normal_experts(10)
+        e = experts[0] if experts else {"id": "expert-wb-default", "name": "专家"}
+    except Exception:
+        e = {"id": "expert-wb-default", "name": "专家"}
+    conv = "mini-exp-" + str(uuid.uuid4())
+    rid = str(uuid.uuid4())
+    # 专家对话事件：在 mini 指纹基础上带 expertId（服务端据此关联「选中专家」）
+    ev = {"eventCode": "chat_request_send", "timestamp": int(time.time() * 1000),
+          "reportDelay": 0, "source": "mini_program", "ideName": "wx_app_cloud",
+          "ideType": "WorkBuddy_MP", "extName": "workbuddy-mp", "extVersion": "2.4.0",
+          "mode": "chat", "conversationId": conv, "requestId": conv, "messageId": "msg-" + rid,
+          "inputLength": 12, "requestModelId": "glm-5.2", "requestModelName": "GLM-5.2",
+          "expertId": e["id"], "expertName": e.get("name", ""),
+          "expertType": "agent", "customAgentName": e.get("name", ""),
+          "isPlan": False, "codebaseEnable": False, "maxToken": 0, "maxSteps": 0,
+          "temperature": 0, "mentionContexts": [], "knowledgeId": [],
+          "agentName": "default", "agentType": "conversation", "userId": uid}
+    try:
+        mp_s = requests.Session(); mp_s.trust_env = False
+        mp_s.headers.update({
+            "Authorization": s.headers.get("Authorization", ""),
+            "Content-Type": "application/json", "Accept": "application/json",
+            "X-Client-Platform": "miniprogram",
+            "User-Agent": "Mozilla/5.0 (Linux; Android 14; MicroMessenger/8.0.49 WeChat/0.8.0 MiniProgramEnv/android; wkbrowser xweb)"})
+        mp_s.post("https://copilot.tencent.com/v2/report", json={"common": {
+            "userId": uid, "userNickname": nick, "ideName": "wx_app_cloud",
+            "ideType": "WorkBuddy_MP", "machineId": derive_id(uid, "mp-machine"),
+            "mode": "chat", "userAgent": MP_UA, "os": "Android",
+            "timezone": "Asia/Shanghai"}, "events": [ev]}, timeout=20, verify=False)
+        log("   小程序专家对话: mini chat + expertId 已上报 (%s)" % e.get("name", ""))
+        time.sleep(2.5)
+        st2, cur2, tgt2 = _mp_prog(s, "Sequential_Tasks_2")
+        if st2 in ("completed", "claimed"):
+            log("   小程序专家对话: ✅ 已完成 %s/%s" % (cur2, tgt2))
+            if st2 == "completed":
+                _mp_claim(s, "Sequential_Tasks_2", log)
+        else:
+            log("   小程序专家对话: %s %s/%s（服务端暂未关联）" % (st2, cur2, tgt2))
+    except Exception as ex:
+        log("   小程序专家对话: 失败 %s" % str(ex)[:60])
+
+
 def t_unknown_tasks(s, uid, nick, log):
     """检测脚本未覆盖的新任务，明确提示"""
     known = {"create_canvas", "playbook_prompt", "RichMeow_Chat", "Library_read", "Expert_lighthouse",
              "Expert_Philanthropy", "Hp_Appearance", "Buddy_App", "Buddy_App_QQ", "Model_chat_GLM5.2",
              "black_cat", "Expert_team_use_3", "first_buddy", "chat_5", "skill_1", "expert_5",
-             "template_5", "automation_1", "workstation_expert"}
+             "template_5", "automation_1", "workstation_expert",
+             "Sequential_Tasks_1", "Sequential_Tasks_2", "school_season"}
     r = s.get(BASE + "/v2/activity/growth/tasks", timeout=25, verify=False).json()
     for t in r.get("data", {}).get("tasks", []):
         if not isinstance(t, dict):
@@ -2223,6 +2293,7 @@ def run_account(idx, acc, do_desktop):
     t_black_cat(s, uid, nick, log)
     t_lighthouse(s, uid, nick, log)
     t_sequential_tasks(s, uid, nick, log)
+    t_sequential_tasks_2(s, uid, nick, log)
     t_school_season(s, uid, nick, log)
     t_badges(s, uid, nick, log)
     t_lottery(s, uid, nick, log)
