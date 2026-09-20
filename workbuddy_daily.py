@@ -1529,6 +1529,104 @@ MP_HEADER = {"X-Client-Platform": "miniprogram",
              "User-Agent": "Mozilla/5.0 (Linux; Android 14; MicroMessenger/8.0.49 WeChat/0.8.0 "
                            "MiniProgramEnv/android; wkbrowser xweb)"}
 
+# ---- 小程序埋点协议（对齐 workbuddy2api-panel internal/upstream/school.go，三账号实测）----
+MP_REPORT_HEADERS = {
+    "Content-Type": "application/json", "Accept": "application/json",
+    "X-Client-Product": "workbuddy-mp", "X-Client-Version": "2.4.0",
+    "X-Client-Platform": "mp-weixin", "X-Platform": "wechatmp",
+}
+
+
+def mp_machine_id(uid):
+    """小程序 machineId（UUID 形态，按 uid 稳定派生——避免多账号共用同一设备号）。"""
+    h = hashlib.md5(("mp:%s" % uid).encode()).hexdigest()
+    return "%s-%s-%s-%s-%s" % (h[:8], h[8:12], h[12:16], h[16:20], h[20:32])
+
+
+def mp_base(uid, nick):
+    """小程序埋点公共指纹（对齐 appservice wQ()+Ao()）。"""
+    now = int(time.time() * 1000)
+    return {"timestamp": now, "ideType": "WorkBuddy_MP", "ideVersion": "2.4.0",
+            "extName": "workbuddy-mp", "extVersion": "2.4.0", "product": "SaaS",
+            "ideName": "wx_app_cloud", "platform": "mini_program",
+            "os": "windows", "osVersion": "11", "arch": "x64",
+            "machineId": mp_machine_id(uid), "timezone": "Asia/Shanghai",
+            "userId": uid, "userNickname": nick}
+
+
+def mp_chat_event(uid, nick, conv_id, activity_id=None):
+    """小程序 chat_request_send 事件（chat_3_times / school_season / Sequential_Tasks_1 判据）。"""
+    rid = "wb2api-" + str(uuid.uuid4())
+    ev = {"eventCode": "chat_request_send", "inputLength": 14, "isPlan": False,
+          "isAutoExecuteTerminal": False, "isAutoModify": False, "codebaseEnable": False,
+          "maxToken": 0, "maxSteps": 500, "temperature": 0, "maxRetries": 0,
+          "mentionContexts": [], "knowledgeId": [], "knowledgeName": [],
+          "codebaseId": "", "mentionContextCount": 0, "command": "",
+          "recommendId": "", "skillId": "", "skillCount": 0, "totalCount": 0,
+          "traceId": rid, "rootRequestId": rid,
+          "parentConversationId": conv_id, "conversationId": conv_id,
+          "messageId": "msg-" + rid[-8:], "agentName": "mp", "agentType": "main",
+          "codebuddy.session_id": conv_id,
+          "codebuddy.conversation_request_id": rid}
+    if activity_id:
+        ev["activityId"] = activity_id
+    return ev
+
+
+def mp_expert_use_events(uid, nick, expert_id, expert_name, conv_id, activity_id=None):
+    """专家召唤+对话 4 事件链（expert_use / Sequential_Tasks_2 判据，上游三账号实测）。
+
+    链：expert_summon_click → expert_summoned → expert_actual_use → chat_request_send
+    """
+    rid = "wb2api-" + str(uuid.uuid4())
+    cat = SCHOOL_EXPERT_CATEGORY
+    evs = [
+        {"eventCode": "expert_summon_click", "id": expert_id, "name": expert_id,
+         "expertTitle": expert_name, "type": cat, "position": 0},
+        {"eventCode": "expert_summoned", "id": expert_id, "name": expert_id,
+         "expertTitle": expert_name},
+        {"eventCode": "expert_actual_use", "id": expert_id, "name": expert_id,
+         "expertTitle": expert_name, "type": cat, "characterCount": 14,
+         "expertType": "builtin"},
+        {"eventCode": "chat_request_send", "inputLength": 14, "isPlan": False,
+         "isAutoExecuteTerminal": False, "isAutoModify": False, "codebaseEnable": False,
+         "maxToken": 0, "maxSteps": 500, "temperature": 0, "maxRetries": 0,
+         "mentionContexts": [], "knowledgeId": [], "knowledgeName": [],
+         "codebaseId": "", "mentionContextCount": 0, "command": "",
+         "recommendId": "", "skillId": "", "skillCount": 0, "totalCount": 0,
+         "traceId": rid, "rootRequestId": rid,
+         "parentConversationId": conv_id, "conversationId": conv_id,
+         "messageId": "msg-" + rid[-8:], "agentName": "mp", "agentType": "main",
+         "expertId": expert_id, "expertName": expert_name,
+         "codebuddy.session_id": conv_id,
+         "codebuddy.conversation_request_id": rid},
+    ]
+    if activity_id:
+        for e in evs:
+            e["activityId"] = activity_id
+    return evs
+
+
+def mp_report(s, uid, nick, events):
+    """以小程序指纹向 www.codebuddy.cn/v2/report 批量上报（上游 ReportMPEvent 同款）。"""
+    base = mp_base(uid, nick)
+    arr = []
+    for e in events:
+        m = dict(base)
+        m.update(e)
+        arr.append(m)
+    s2 = requests.Session(); s2.trust_env = False
+    hdr = dict(MP_REPORT_HEADERS)
+    hdr["Authorization"] = s.headers.get("Authorization", "")
+    if uid:
+        hdr["X-User-Id"] = uid
+    try:
+        r = s2.post("https://www.codebuddy.cn/v2/report", json=arr,
+                    headers=hdr, timeout=20, verify=False)
+        return r.status_code
+    except Exception:
+        return 0
+
 
 def _mp_prog(s, code):
     """小程序口径查询任务（需 X-Client-Platform: miniprogram，否则任务不下发）。"""
@@ -1570,181 +1668,63 @@ def _mp_claim(s, code, log):
         return False
 
 
-def _mini_report(s, uid, nick, conv_id):
-    """小程序指纹 chat_request_send 上报（copilot.tencent.com 域 + miniprogram 头）。"""
-    rid = str(uuid.uuid4())
-    ev = {"eventCode": "chat_request_send", "timestamp": int(time.time() * 1000),
-          "reportDelay": 0, "source": "mini_program", "ideName": "wx_app_cloud",
-          "ideType": "WorkBuddy_MP", "extName": "workbuddy-mp", "extVersion": "2.4.0",
-          "mode": "chat", "conversationId": conv_id, "requestId": conv_id,
-          "inputLength": 12, "requestModelId": "glm-5.2", "requestModelName": "GLM-5.2",
-          "isPlan": False, "codebaseEnable": False, "maxToken": 0, "maxSteps": 0,
-          "temperature": 0, "mentionContexts": [], "knowledgeId": [],
-          "agentName": "default", "agentType": "conversation", "userId": uid}
-    mp_s = requests.Session()
-    mp_s.trust_env = False
-    mp_s.headers.update({"Authorization": "Bearer " + s.headers.get("Authorization", "").replace("Bearer ", ""),
-                         "Content-Type": "application/json", "Accept": "application/json",
-                         "User-Agent": "Mozilla/5.0 (Linux; Android 14; MicroMessenger/8.0.49 WeChat/0.8.0 MiniProgramEnv/android; wkbrowser xweb)",
-                         "X-Client-Platform": "miniprogram"})
+def _mp_do_task(s, uid, nick, code, log, events_fn, label):
+    """小程序任务通用流程：mp 查询 → accept → 判据上报 → 回读 → claim。"""
+    st, cur, tgt = _mp_prog(s, code)
+    if st is None:
+        log("   %s: mp 口径未下发该任务，跳过" % label)
+        return
+    if st in ("completed", "claimed"):
+        if st == "completed":
+            _mp_claim(s, code, log)
+        else:
+            log("   %s: 已领取，跳过" % label)
+        return
+    if st == "not_accepted":
+        if not _mp_accept(s, code):
+            log("   %s: accept 失败，跳过" % label)
+            return
+        time.sleep(WRITE_GAP)
     try:
-        r = mp_s.post("https://copilot.tencent.com/v2/report", json={"common": {
-            "userId": uid, "userNickname": nick, "ideName": "wx_app_cloud",
-            "ideType": "WorkBuddy_MP", "machineId": derive_id(uid, "mp-machine"),
-            "mode": "chat", "userAgent": MP_UA, "os": "Android",
-            "timezone": "Asia/Shanghai"}, "events": [ev]}, timeout=20, verify=False)
-        return r.status_code
-    except Exception:
-        return 0
+        evs = events_fn()
+        st_code = mp_report(s, uid, nick, evs)
+        log("   %s: 判据已上报（HTTP %s，%d 个事件）" % (label, st_code, len(evs)))
+        time.sleep(2.5)
+        st2, cur2, tgt2 = _mp_prog(s, code)
+        if st2 in ("completed", "claimed"):
+            log("   %s: ✅ 已完成 %s/%s" % (label, cur2, tgt2))
+            if st2 == "completed":
+                _mp_claim(s, code, log)
+        else:
+            log("   %s: %s %s/%s（服务端暂未关联）" % (label, st2, cur2, tgt2))
+    except Exception as e:
+        log("   %s: 失败 %s" % (label, str(e)[:60]))
 
 
 def t_sequential_tasks(s, uid, nick, log):
-    """小程序成长任务 Sequential_Tasks_1：mp口径查询→accept→mini上报→回读→claim（+100c+5e）"""
-    st, cur, tgt = _mp_prog(s, "Sequential_Tasks_1")
-    if st is None:
-        log("   小程序对话任务: mp 口径未下发该任务，跳过")
-        return
-    if st in ("completed", "claimed"):
-        if st == "completed":
-            _mp_claim(s, "Sequential_Tasks_1", log)
-        else:
-            log("   小程序对话任务: 已领取，跳过")
-        return
-    if st == "not_accepted":
-        if not _mp_accept(s, "Sequential_Tasks_1"):
-            log("   小程序对话任务: accept 失败，跳过")
-            return
-        time.sleep(WRITE_GAP)
-    conv = "mini-" + str(uuid.uuid4())
-    try:
-        _mini_report(s, uid, nick, conv)
-        log("   小程序对话任务: mini chat 已上报")
-        time.sleep(2.5)
-        st2, cur2, tgt2 = _mp_prog(s, "Sequential_Tasks_1")
-        if st2 in ("completed", "claimed"):
-            log("   小程序对话任务: ✅ 已完成 %s/%s" % (cur2, tgt2))
-            if st2 == "completed":
-                _mp_claim(s, "Sequential_Tasks_1", log)
-        else:
-            log("   小程序对话任务: %s %s/%s（服务端暂未关联）" % (st2, cur2, tgt2))
-    except Exception as e:
-        log("   小程序对话任务: 失败 %s" % str(e)[:60])
-
-
-def t_school_season(s, uid, nick, log):
-    """小程序成长任务 school_season：mp口径查询→accept→mini chat+activityId→回读→claim（+100c+5e）"""
-    st, cur, tgt = _mp_prog(s, "school_season")
-    if st is None:
-        log("   校园日活动: mp 口径未下发该任务，跳过")
-        return
-    if st in ("completed", "claimed"):
-        if st == "completed":
-            _mp_claim(s, "school_season", log)
-        else:
-            log("   校园日活动: 已领取，跳过")
-        return
-    if st == "not_accepted":
-        if not _mp_accept(s, "school_season"):
-            log("   校园日活动: accept 失败，跳过")
-            return
-        time.sleep(WRITE_GAP)
-    conv = "mini-ss-" + str(uuid.uuid4())
-    ev = {"eventCode": "chat_request_send", "timestamp": int(time.time() * 1000),
-          "reportDelay": 0, "source": "mini_program", "ideName": "wx_app_cloud",
-          "ideType": "WorkBuddy_MP", "extName": "workbuddy-mp", "extVersion": "2.4.0",
-          "mode": "chat", "conversationId": conv, "requestId": conv,
-          "inputLength": 12, "requestModelId": "glm-5.2", "requestModelName": "GLM-5.2",
-          "activityId": SCHOOL_ACTIVITY_ID,
-          "isPlan": False, "codebaseEnable": False, "maxToken": 0, "maxSteps": 0,
-          "temperature": 0, "mentionContexts": [], "knowledgeId": [],
-          "agentName": "default", "agentType": "conversation", "userId": uid}
-    try:
-        mp_s = requests.Session(); mp_s.trust_env = False
-        mp_s.headers.update({"Authorization": "Bearer " + s.headers.get("Authorization", "").replace("Bearer ", ""),
-                             "Content-Type": "application/json", "Accept": "application/json",
-                             "X-Client-Platform": "miniprogram",
-                             "User-Agent": "Mozilla/5.0 (Linux; Android 14; MicroMessenger/8.0.49 WeChat/0.8.0 MiniProgramEnv/android; wkbrowser xweb)"})
-        mp_s.post("https://copilot.tencent.com/v2/report", json={"common": {
-            "userId": uid, "userNickname": nick, "ideName": "wx_app_cloud",
-            "ideType": "WorkBuddy_MP", "machineId": derive_id(uid, "mp-machine"),
-            "mode": "chat", "userAgent": MP_UA, "os": "Android",
-            "timezone": "Asia/Shanghai"}, "events": [ev]}, timeout=20, verify=False)
-        log("   校园日活动: mini chat+activityId 已上报")
-        time.sleep(2.5)
-        st2, cur2, tgt2 = _mp_prog(s, "school_season")
-        if st2 in ("completed", "claimed"):
-            log("   校园日活动: ✅ 已完成 %s/%s" % (cur2, tgt2))
-            if st2 == "completed":
-                _mp_claim(s, "school_season", log)
-        else:
-            log("   校园日活动: %s %s/%s（服务端暂未关联）" % (st2, cur2, tgt2))
-    except Exception as e:
-        log("   校园日活动: 失败 %s" % str(e)[:60])
+    """小程序成长任务 Sequential_Tasks_1：mini 对话（+100c+5e）"""
+    _mp_do_task(s, uid, nick, "Sequential_Tasks_1", log,
+                lambda: [mp_chat_event(uid, nick, "wbmp-" + str(uuid.uuid4()))],
+                "小程序对话任务")
 
 
 def t_sequential_tasks_2(s, uid, nick, log):
-    """小程序成长任务 Sequential_Tasks_2：选中专家 + mini 对话（+200c+5e）
+    """小程序成长任务 Sequential_Tasks_2：选中专家 + 完成对话（+200c+5e）"""
+    def _evs():
+        eid, ename = _school_fetch_expert(s)
+        if not eid:
+            eid, ename = "WorkspaceBuilder", "专家"
+        conv = "wbexp-" + str(uuid.uuid4())
+        return mp_expert_use_events(uid, nick, eid, ename, conv)
+    _mp_do_task(s, uid, nick, "Sequential_Tasks_2", log, _evs, "小程序专家对话")
 
-    判据：在小程序内「选中专家并完成有效对话」——事件需带 expertId，
-    走 mp 口径（X-Client-Platform: miniprogram）+ copilot 域上报。
-    """
-    st, cur, tgt = _mp_prog(s, "Sequential_Tasks_2")
-    if st is None:
-        log("   小程序专家对话: mp 口径未下发该任务，跳过")
-        return
-    if st in ("completed", "claimed"):
-        if st == "completed":
-            _mp_claim(s, "Sequential_Tasks_2", log)
-        else:
-            log("   小程序专家对话: 已领取，跳过")
-        return
-    if st == "not_accepted":
-        if not _mp_accept(s, "Sequential_Tasks_2"):
-            log("   小程序专家对话: accept 失败，跳过")
-            return
-        time.sleep(WRITE_GAP)
-    # 拉取一个可用专家（复用市场接口），失败则用兜底 id
-    try:
-        experts = get_normal_experts(10)
-        e = experts[0] if experts else {"id": "expert-wb-default", "name": "专家"}
-    except Exception:
-        e = {"id": "expert-wb-default", "name": "专家"}
-    conv = "mini-exp-" + str(uuid.uuid4())
-    rid = str(uuid.uuid4())
-    # 专家对话事件：在 mini 指纹基础上带 expertId（服务端据此关联「选中专家」）
-    ev = {"eventCode": "chat_request_send", "timestamp": int(time.time() * 1000),
-          "reportDelay": 0, "source": "mini_program", "ideName": "wx_app_cloud",
-          "ideType": "WorkBuddy_MP", "extName": "workbuddy-mp", "extVersion": "2.4.0",
-          "mode": "chat", "conversationId": conv, "requestId": conv, "messageId": "msg-" + rid,
-          "inputLength": 12, "requestModelId": "glm-5.2", "requestModelName": "GLM-5.2",
-          "expertId": e["id"], "expertName": e.get("name", ""),
-          "expertType": "agent", "customAgentName": e.get("name", ""),
-          "isPlan": False, "codebaseEnable": False, "maxToken": 0, "maxSteps": 0,
-          "temperature": 0, "mentionContexts": [], "knowledgeId": [],
-          "agentName": "default", "agentType": "conversation", "userId": uid}
-    try:
-        mp_s = requests.Session(); mp_s.trust_env = False
-        mp_s.headers.update({
-            "Authorization": s.headers.get("Authorization", ""),
-            "Content-Type": "application/json", "Accept": "application/json",
-            "X-Client-Platform": "miniprogram",
-            "User-Agent": "Mozilla/5.0 (Linux; Android 14; MicroMessenger/8.0.49 WeChat/0.8.0 MiniProgramEnv/android; wkbrowser xweb)"})
-        mp_s.post("https://copilot.tencent.com/v2/report", json={"common": {
-            "userId": uid, "userNickname": nick, "ideName": "wx_app_cloud",
-            "ideType": "WorkBuddy_MP", "machineId": derive_id(uid, "mp-machine"),
-            "mode": "chat", "userAgent": MP_UA, "os": "Android",
-            "timezone": "Asia/Shanghai"}, "events": [ev]}, timeout=20, verify=False)
-        log("   小程序专家对话: mini chat + expertId 已上报 (%s)" % e.get("name", ""))
-        time.sleep(2.5)
-        st2, cur2, tgt2 = _mp_prog(s, "Sequential_Tasks_2")
-        if st2 in ("completed", "claimed"):
-            log("   小程序专家对话: ✅ 已完成 %s/%s" % (cur2, tgt2))
-            if st2 == "completed":
-                _mp_claim(s, "Sequential_Tasks_2", log)
-        else:
-            log("   小程序专家对话: %s %s/%s（服务端暂未关联）" % (st2, cur2, tgt2))
-    except Exception as ex:
-        log("   小程序专家对话: 失败 %s" % str(ex)[:60])
+
+def t_school_season(s, uid, nick, log):
+    """小程序成长任务 school_season 校园日：mini 对话 + activityId（+100c+5e）"""
+    _mp_do_task(s, uid, nick, "school_season", log,
+                lambda: [mp_chat_event(uid, nick, "wbmps-" + str(uuid.uuid4()),
+                                       activity_id=SCHOOL_ACTIVITY_ID)],
+                "校园日活动")
 
 
 def t_unknown_tasks(s, uid, nick, log):
@@ -1833,36 +1813,26 @@ def _school_report(s, uid, nick, events, host=None, desktop=False):
 
 
 def _school_fetch_expert(s):
-    """拉取 BackToSchool 分类的专家，失败回落已知专家。"""
+    """拉取 BackToSchool 分类的真实专家（字段名对齐上游 school.fetch_school_expert）。"""
+    body = {"edition_mode": "all,domestic", "page": 1, "page_size": 20,
+            "sort_by": "use_count", "sort_order": "desc",
+            "categories": [SCHOOL_EXPERT_CATEGORY], "expert_type": "agent"}
     try:
-        r = _school_post(s, SCHOOL_DOMAIN + "/v2/operation-platform/market/expert/list",
-                         {"page": 1, "page_size": 10,
-                          "categories": [SCHOOL_EXPERT_CATEGORY], "expert_type": "agent"})
+        r = _school_post(s, SCHOOL_DOMAIN + "/v2/operation-platform/market/expert/list", body)
         d = r.json()
         experts = (d.get("data") or {}).get("experts") or []
-        if experts:
-            e = experts[0]
-            return e.get("id", ""), e.get("displayName", e.get("name", "开学季专家"))
+        for e in experts:
+            eid = e.get("expert_id")          # ← 正确字段名（不是 "id"）
+            if not eid:
+                continue
+            dn = e.get("display_name_zh") or {}
+            name = (dn.get("zh") if isinstance(dn, dict) else dn) or eid
+            return eid, name
     except Exception:
         pass
     for eid, info in SCHOOL_EXPERT_FALLBACK.items():
         return eid, info["name"]
     return "", ""
-
-
-def _school_mini_chat_event(uid, nick, conv_id):
-    """返回纯事件列表（信封由 _school_report 统一包装）。"""
-    rid = str(uuid.uuid4())
-    return [{"eventCode": "chat_request_send", "timestamp": int(time.time() * 1000),
-             "reportDelay": 0, "source": "mini_program", "ideName": "wx_app_cloud",
-             "ideType": "WorkBuddy_MP", "extName": "workbuddy-mp", "extVersion": "2.4.0",
-             "mode": "chat", "activityId": SCHOOL_ACTIVITY_ID,
-             "conversationId": conv_id, "requestId": conv_id, "messageId": "msg-" + rid,
-             "requestModelId": "glm-5.2", "requestModelName": "GLM-5.2",
-             "inputLength": 12, "mentionContexts": [], "mentionContextCount": 0,
-             "isPlan": False, "codebaseEnable": False, "maxToken": 0, "maxSteps": 0,
-             "temperature": 0, "agentName": "default", "agentType": "conversation",
-             "userId": uid}]
 
 
 def _school_desktop_seq_event(uid, nick, conv_id):
@@ -1879,18 +1849,9 @@ def _school_desktop_seq_event(uid, nick, conv_id):
 
 
 def _school_expert_event(uid, nick, expert_id, expert_name, conv_id):
-    rid = str(uuid.uuid4()); mid_msg = "msg-" + rid
-    now = int(time.time() * 1000)
-    return [{"eventCode": "expert_summoned", "id": expert_id, "name": expert_name,
-             "type": "agent", "expertType": "agent", "source": "builtin",
-             "version": "", "reportDelay": 0, "timestamp": now,
-             "activityId": SCHOOL_ACTIVITY_ID, "userId": uid},
-            {"eventCode": "expert_actual_use", "id": expert_id, "name": expert_name,
-             "expertTitle": expert_name, "type": "agent", "expertType": "agent", "source": "builtin",
-             "version": "", "cost": 0, "characterCount": 12, "reportDelay": 0,
-             "requestId": rid, "messageId": mid_msg, "conversationId": conv_id,
-             "requestModelId": "deepseek-v4-flash", "requestModelName": "DeepSeek V4 Flash",
-             "timestamp": now, "activityId": SCHOOL_ACTIVITY_ID, "userId": uid}]
+    """专家 4 事件链（含 activityId，开学季 expert_use 判据）。"""
+    return mp_expert_use_events(uid, nick, expert_id, expert_name, conv_id,
+                                activity_id=SCHOOL_ACTIVITY_ID)
 
 
 def _school_fetch_tasks(s):
@@ -1930,8 +1891,16 @@ def school_run_tasks(s, uid, nick, log):
         spec = SCHOOL_TASK_MODES.get(code)
         if not code:
             continue
-        if status in ("completed", "claimed"):
-            log("   %s: %s 已完成/已领，跳过" % (code, status))
+        if status == "claimed":
+            log("   %s: 已领取，跳过" % code)
+            continue
+        if status == "completed":
+            # 已完成未领奖 → 补领（此前误判为"跳过"，导致奖励漏领）
+            if _school_claim(s, code):
+                log("   %s: 🎁 补领奖成功" % code)
+            else:
+                log("   %s: 补领奖失败（可稍后重试）" % code)
+            time.sleep(WRITE_GAP)
             continue
         if spec is None:
             log("   %s: 未知任务类型，跳过" % code)
@@ -1962,9 +1931,10 @@ def school_run_tasks(s, uid, nick, log):
             conv_id = "conv-" + str(uuid.uuid4())
             if kind == "mini_chat":
                 for i in range(3):
-                    ev = _school_mini_chat_event(uid, nick, conv_id)
                     try:
-                        _school_report(s, uid, nick, ev)
+                        mp_report(s, uid, nick, [mp_chat_event(
+                            uid, nick, "wbsc-" + str(uuid.uuid4()),
+                            activity_id=SCHOOL_ACTIVITY_ID)])
                         log("   %s: chat #%d/3 ✅" % (code, i + 1))
                         time.sleep(WRITE_GAP)
                     except Exception as e:
@@ -1979,11 +1949,13 @@ def school_run_tasks(s, uid, nick, log):
                     log("   %s: desktop 失败 %s" % (code, str(e)[:60]))
             elif kind == "expert":
                 eid, ename = _school_fetch_expert(s)
-                if eid:
-                    ev = _school_expert_event(uid, nick, eid, ename, conv_id)
+                if not eid:
+                    log("   %s: 未取到专家，跳过" % code)
+                else:
                     try:
-                        _school_report(s, uid, nick, ev)
-                        log("   %s: expert_use ✅ (%s)" % (code, ename))
+                        evs = _school_expert_event(uid, nick, eid, ename, conv_id)
+                        mp_report(s, uid, nick, evs)
+                        log("   %s: expert 4事件链 ✅ (%s)" % (code, ename))
                         time.sleep(WRITE_GAP)
                     except Exception as e:
                         log("   %s: expert 失败 %s" % (code, str(e)[:60]))
