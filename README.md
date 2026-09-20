@@ -216,6 +216,8 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 | 4 | 召唤开学季专家 | BackToSchool 专家事件 |
 | 5 | ~~学生认证~~ | ❌ 微信实名认证，人工环节 |
 
+> 🔗 **专家任务**：召唤 4 事件链（点击 → 召唤 → 使用 → 对话），与官方小程序埋点同构。
+>
 > 🎰 **幸运大转盘**：查余额 → 循环抽奖到 0
 > 奖品：6 积分 / 66 积分 / 瑞幸 15 元券 / KFC OK 餐券 / KFC 冰淇淋券 / 酷狗会员月卡
 
@@ -227,7 +229,8 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 | 2 | `Sequential_Tasks_2` 小程序内选中专家并完成对话 | **+200 积分** +5 能量 |
 | 3 | `school_season` 参与校园日有奖活动 | +100 积分 +5 能量 |
 
-> 💡 这三项需 `X-Client-Platform: miniprogram` 请求头才下发，脚本已自动处理。
+> 💡 这三项需 `X-Client-Platform: miniprogram` 请求头才下发（查询/接受/领奖三处都要），脚本已自动处理。
+> 💡 判据上报走小程序指纹头族（`X-Client-Platform: mp-weixin` + `X-Client-Product: workbuddy-mp`），对齐官方 appservice 埋点。
 
 ### 🎮 互动玩法（8 项）
 
@@ -266,6 +269,8 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 - **📋 进度感知**：只上报缺口数量的事件，不重复提交已完成的进度。
 - **🏫 开学季活动**：自动执行开学季限时任务（分享 / 对话 / 专家）+ 幸运大转盘抽奖。
 - **🌙 夜猫子规则对齐**：官方为「每日 1 次 × 累计 3 天」，脚本有响应即停，不会一晚空跑多次。
+- **🎁 自动补领奖**：扫描到 `completed` 但未领取的任务会自动补领，不会因中途异常漏掉奖励。
+- **📱 小程序协议对齐**：四事件专家链（`expert_summon_click` → `expert_summoned` → `expert_actual_use` → `chat_request_send`）+ 小程序指纹头族，与官方小程序埋点一致。
 - **📢 双渠道推送**：PushPlus（微信）+ Bark（iOS）可同时配置，互不影响。
 
 ---
