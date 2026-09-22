@@ -686,30 +686,55 @@ def t_sign(s, uid, nick, log):
 
 
 def t_accept_all(s, uid, nick, log):
+    """接受全部未接受任务：批量 accept → 解析逐项结果 → 未落账的逐个重试。
+
+    ⚠️ accept 响应是**逐任务**返回状态：
+        {"code":0, "data":{"results":[{"task_code":..,"status":"accepted"|"error","message":..}]}}
+    顶层 code=0 只代表请求送达，不代表每项都登记成功（实测存在整体 error 的形态）。
+    """
     r = s.get(BASE + "/v2/activity/growth/tasks", timeout=25, verify=False).json()
     todo = [t.get("task_code") for t in r.get("data", {}).get("tasks", [])
             if isinstance(t, dict) and t.get("accept_status") == "not_accepted"]
-    if todo:
-        r2 = s.post(BASE + "/v2/activity/growth/tasks/accept", json={"task_codes": todo}, timeout=20, verify=False)
-        try:
-            if r2.json().get("code") != 0:
-                log("   📋接受任务失败，继续执行已有状态")
-                return
-        except Exception:
-            pass
-        log("   📋已接受任务: %s" % ",".join(todo))
-        for attempt in range(8):
-            time.sleep(2)
-            st = s.get(BASE + "/v2/activity/growth/tasks", timeout=25, verify=False).json()
-            still = [t.get("task_code") for t in st.get("data", {}).get("tasks", [])
-                     if isinstance(t, dict) and t.get("task_code") in todo
-                     and t.get("accept_status") == "not_accepted"]
-            if not still:
-                log("   ✅ 任务状态已同步（等待 %d 秒）" % ((attempt + 1) * 2))
-                return
-            if attempt < 7:
-                log("   ⏳ 还有 %d 个任务待同步（第 %d 次检查）..." % (len(still), attempt + 1))
-        log("   ⚠️ 等待 15 秒后仍未同步: %s" % ",".join(still))
+    if not todo:
+        return
+    # ---- 1) 批量接受 + 解析逐项结果 ----
+    resp = {}
+    try:
+        r2 = s.post(BASE + "/v2/activity/growth/tasks/accept",
+                    json={"task_codes": todo}, timeout=20, verify=False)
+        d2 = r2.json()
+        for x in ((d2.get("data") or {}).get("results") or []):
+            if isinstance(x, dict) and x.get("task_code"):
+                resp[x["task_code"]] = (x.get("status") or "", (x.get("message") or "")[:50])
+        ok = [c for c in todo if resp.get(c, ("", ""))[0] == "accepted"]
+        bad = [(c, resp[c][0], resp[c][1]) for c in todo if c in resp and resp[c][0] != "accepted"]
+        nolog = [c for c in todo if c not in resp]
+        log("   📋批量接受 %d 项 → 成功 %d / 未登记 %d%s" % (
+            len(todo), len(ok), len(bad) + len(nolog),
+            ("（%d 项无返回）" % len(nolog)) if nolog else ""))
+        for c, st, m in bad[:6]:
+            log("      ✗ %s: %s %s" % (c, st, m))
+        if len(bad) > 6:
+            log("      ...另 %d 项" % (len(bad) - 6))
+    except Exception as e:
+        log("   📋批量接受异常: %s" % str(e)[:60])
+    # ---- 2) 回读验证 + 逐个重试（上游存在 200+OK 但未落账的形态）----
+    time.sleep(2)
+    pending = [c for c in todo if prog(s, c)[0] in (None, "not_accepted")]
+    if not pending:
+        log("   ✅ 全部登记生效（%d 项）" % len(todo))
+        return
+    log("   🔁 %d 项未落账，逐个重试..." % len(pending))
+    still = []
+    for c in pending:
+        if not _accept_with_verify(s, c, log):
+            still.append(c)
+        time.sleep(1.0)
+    if still:
+        log("   ⚠️ 仍无法登记 %d 项: %s" % (len(still), ",".join(still[:10])))
+        log("      （这些任务的上报可能不被计数，请把本段日志反馈给作者）")
+    else:
+        log("   ✅ 重试后全部登记生效")
 
 
 def t_team_3(s, uid, nick, log):
@@ -1654,16 +1679,22 @@ def _mp_prog(s, code):
     return None, None, None
 
 
-def _mp_accept(s, code):
-    """小程序口径接受任务（缺头会返回 task not found）。"""
+def _mp_accept(s, code, log=None):
+    """小程序口径接受任务（缺头会返回 task not found）。失败时打印服务端原因。"""
     try:
         r = s.post(BASE + "/v2/activity/growth/tasks/accept", json={"task_codes": [code]},
                    timeout=20, verify=False, headers=MP_HEADER)
         d = r.json()
         results = (d.get("data") or {}).get("results") or []
         status = (results[0].get("status") or "") if results else (d.get("msg") or "")
-        return r.status_code == 200 and status == "accepted"
-    except Exception:
+        msg = (results[0].get("message") or "")[:50] if results else ""
+        ok = r.status_code == 200 and status == "accepted"
+        if not ok and log:
+            log("      ✗ accept %s: %s %s" % (code, status or "无返回", msg))
+        return ok
+    except Exception as e:
+        if log:
+            log("      ✗ accept %s 异常: %s" % (code, str(e)[:50]))
         return False
 
 
@@ -1694,7 +1725,7 @@ def _mp_do_task(s, uid, nick, code, log, events_fn, label):
             log("   %s: 已领取，跳过" % label)
         return
     if st == "not_accepted":
-        if not _mp_accept(s, code):
+        if not _mp_accept(s, code, log):
             log("   %s: accept 失败，跳过" % label)
             return
         time.sleep(WRITE_GAP)
@@ -2202,9 +2233,10 @@ def _accept_with_verify(s, code, log):
         t = prog(s, code)
         ast = t[0] if t else "not_accepted"
         ok = (r.status_code == 200 and status == "accepted" and ast != "not_accepted")
-        log("   accept %s 尝试%d status=%s 回读=%s%s" % (code, attempt, status, ast, " → 生效" if ok else ""))
         if ok:
             return True
+        if attempt > 1:
+            log("      ✗ %s: accept %s 回读=%s" % (code, status or "无返回", ast))
         time.sleep(WRITE_GAP)
     return False
 
