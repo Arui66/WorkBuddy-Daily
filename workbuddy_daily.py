@@ -17,7 +17,7 @@
    🎮 8 项互动玩法   抽奖、盲盒、Buddy、派猫猫旅行、连签兑换、补签卡、礼包补偿、徽章
    💰 三类查询       积分套餐（剩余/总量/已用）、用量统计、成长数据（等级/连签/能量）
    🎁 自动领奖       扫描全部已完成任务自动领取；completed 未领的自动补领
-   📢 双渠道推送     PushPlus（微信）+ Bark（iOS），可同时配置互不影响
+   📢 三渠道推送     PushPlus（微信）+ Bark（iOS）+ 企业微信机器人，可同时配置
    🧩 幂等安全       重复运行只补缺口，不会重复领取或重复操作
    🔄 API 重试       网络/5xx 自动指数退避重试，写动作间隔可调（--gap）
    🔗 稳定指纹       每账号 md5 派生固定 machineId，桌面/web/小程序三域对齐官方埋点
@@ -43,6 +43,7 @@
    WORKBUDDY_REFRESH_TOKEN   【必填】多账号刷新令牌，换行分隔
    PUSHPLUS_TOKEN            【可选】PushPlus 推送（微信）
    BARK_URL                  【可选】Bark 推送（iOS），如 https://api.day.app/xxxxxxxx
+   WECOM_WEBHOOK             【可选】企业微信群机器人（完整 URL 或仅 key）
 
 获取变量值（首次必看）
    第一步：在电脑上安装并登录 WorkBuddy 桌面端
@@ -2529,6 +2530,36 @@ def build_summary(summaries):
 
 
 # ---------- 推送通知（内置 PushPlus + Bark，无需外部模块） ----------
+def _wecom_notify(title, content):
+    """企业微信群机器人推送；未配置 WECOM_WEBHOOK 则跳过。
+
+    WECOM_WEBHOOK 支持两种形态：
+      · 完整 webhook URL：https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxx
+      · 仅 key：xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx（自动补全 URL）
+    企业微信 text 消息上限 2048 字节，超长自动截断。
+    """
+    raw = os.environ.get("WECOM_WEBHOOK", "").strip()
+    if not raw:
+        return False
+    url = raw if raw.startswith("http") else (
+        "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=" + raw)
+    msg = "%s\n%s" % (title, content)
+    if len(msg.encode("utf-8")) > 2000:
+        msg = msg.encode("utf-8")[:1900].decode("utf-8", "ignore") + "\n...(内容过长已截断)"
+    try:
+        s = requests.Session(); s.trust_env = False
+        r = s.post(url, json={"msgtype": "text", "text": {"content": msg}},
+                   timeout=20, verify=False)
+        d = r.json()
+        if d.get("errcode") == 0:
+            print("📢 企业微信推送成功")
+            return True
+        print("📢 企业微信推送失败: %s" % str(d.get("errmsg", ""))[:80])
+    except Exception as e:
+        print("📢 企业微信异常: %s" % str(e)[:80])
+    return False
+
+
 def _bark_notify(title, content):
     """Bark 推送（iOS）；未配置 BARK_URL 则跳过。直接 POST 到 BARK_URL（/:device_key 路由），
     不加 /push 后缀——bark-server 会把 URL 路径第二段解析为 body 参数覆盖 JSON。"""
@@ -2573,10 +2604,11 @@ def send_notify(title, content):
 
 
 def send_notify_all(title, content):
-    """推送通知到所有已配置的渠道（PushPlus + Bark）。"""
+    """推送通知到所有已配置的渠道（PushPlus + Bark + 企业微信）。"""
     r1 = send_notify(title, content)
     r2 = _bark_notify(title, content)
-    return r1 or r2
+    r3 = _wecom_notify(title, content)
+    return r1 or r2 or r3
 
 
 def main():
