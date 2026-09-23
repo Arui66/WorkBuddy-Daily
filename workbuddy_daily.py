@@ -849,6 +849,7 @@ def t_chat_n(s, uid, nick, log, code, n, prompts):
 def t_black_cat(s, uid, nick, log):
     st, cur, tgt = prog(s, "black_cat")
     if st in ("completed", "claimed"):
+        log("   夜猫子: 已 %s %s/%s" % (st, cur, tgt))
         return
     if not within_night_window():
         # 显式用北京时间：GitHub Actions runner 是 UTC，localtime() 会误导排查
@@ -1495,6 +1496,7 @@ def t_first_buddy(s, uid, nick, log):
     """新账号：领取第一只Buddy"""
     st, cur, tgt = prog(s, "first_buddy")
     if st in ("completed", "claimed"):
+        log("   🐱首只Buddy: 已 %s %s/%s" % (st, cur, tgt))
         return
     try:
         report(s, uid, nick, [{"eventCode": "buddy_agreement_view", "timestamp": int(time.time() * 1000)}])
@@ -1844,7 +1846,7 @@ def t_sequential_tasks_4(s, uid, nick, log):
         return
     if st == "not_accepted":
         if not _mp_accept(s, "Sequential_Tasks_4", log):
-            log("   小程序定时任务: accept 未生效（可能在每日锁定窗口）")
+            log("   小程序定时任务: 今日未解锁（链式任务每日零点解锁下一环，明日自动重试）")
             return
         time.sleep(WRITE_GAP)
     _evs(0)
@@ -2408,6 +2410,8 @@ def run_account(idx, acc, do_desktop):
         t_desktop_tasks(s, uid, nick, tok, log, need_rich, need_skill)
     elif need_rich or need_skill:
         log("── 桌面任务跳过(--no-desktop): RichMeow=%s skill_1=%s ──" % (need_rich, need_skill))
+    else:
+        log("  🖥️ 桌面任务: 已完成（RichMeow/skill_1），跳过")
     # 任务
     log("  ☁️ ── 云端任务 ──")
     t_accept_all(s, uid, nick, log)
