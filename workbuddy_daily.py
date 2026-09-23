@@ -13,7 +13,7 @@
    🔐 Token 永续     只配一个刷新令牌变量，脚本自动续期（90 天滚动，永不过期）
    ✅ 成长任务       18 项云端/桌面全覆盖 + 轻量云专家（仅公益专家需真实捐款）
    🏫 开学季活动     分享/对话/桌面对话/专家 + 幸运大转盘（含瑞幸/KFC/酷狗实物券）
-   📱 小程序任务     3 项：校园日 + 小程序对话 + 小程序专家对话（共 +400c+15e）
+   📱 小程序任务     5 项：对话/专家/5次对话/定时任务/校园日（共 +800c+25e，链式每日解锁）
    🎮 8 项互动玩法   抽奖、盲盒、Buddy、派猫猫旅行、连签兑换、补签卡、礼包补偿、徽章
    💰 三类查询       积分套餐（剩余/总量/已用）、用量统计、成长数据（等级/连签/能量）
    🎁 自动领奖       扫描全部已完成任务自动领取；completed 未领的自动补领
@@ -73,10 +73,13 @@
       分享活动给好友 · 与AI对话3次 · 桌面端对话1次 · 召唤开学季专家
       ❌ 学生认证（需微信实名，人工环节）
       🎰 幸运大转盘：抽到余额为 0（积分 6/66 + 瑞幸/KFC/酷狗实物券）
-   📱 小程序成长任务（3 项，需 X-Client-Platform: miniprogram 头）
-      Sequential_Tasks_1 小程序对话（+100c+5e）
-      Sequential_Tasks_2 小程序专家对话（+200c+5e）
+   📱 小程序成长任务（5 项，需 X-Client-Platform: miniprogram 头）
+      Sequential_Tasks_1 完成 1 次对话（+100c+5e）
+      Sequential_Tasks_2 选中专家并完成对话（+200c+5e）
+      Sequential_Tasks_3 完成 5 次对话（+300c+5e）
+      Sequential_Tasks_4 创建 1 个定时任务（+100c+5e）
       school_season 校园日（+100c+5e）
+      ※ Tasks_1~7 为链式任务，完成一环后次日零点解锁下一环
    🎮 互动玩法（8 项）
       抽奖 · 盲盒 · Buddy信息 · 派猫猫旅行 · 连签兑换 · 补签卡 · 礼包补偿 · 徽章
 
@@ -139,6 +142,8 @@ TASK_NAME_CN = {
     "wb_wechat_oa_subscribe_task": "关注公众号",
     "Sequential_Tasks_1": "小程序对话",
     "Sequential_Tasks_2": "小程序专家对话",
+    "Sequential_Tasks_3": "小程序对话5次",
+    "Sequential_Tasks_4": "小程序定时任务",
     "school_season": "校园日活动",
 }
 
@@ -1646,6 +1651,25 @@ def mp_expert_use_events(uid, nick, expert_id, expert_name, conv_id, activity_id
     return evs
 
 
+def mp_mini_expert_event(uid, nick, expert_id, expert_name):
+    """Sequential_Tasks_2 判据：mp 指纹 expert_actual_use（上游小程序源码实测形状）。
+
+    ⚠️ 与 school 域 expert 事件的区别（勿混用）：
+      · 不带 activityId / conversationId —— 真实小程序事件就是两者都没有
+      · extVersion 用小程序自身版本 2.2.8（school 段是 "SaaS"，另一口径）
+      · type 固定 "send_message"
+    上游实测：上报即 completed，claim 入账 200c+5e。
+    """
+    return {"eventCode": "expert_actual_use", "timestamp": int(time.time() * 1000),
+            "reportDelay": 0, "ideName": "wx_app_cloud", "ideType": "WorkBuddy_MP",
+            "extName": "workbuddy-mp", "extVersion": "2.2.8", "product": "SaaS",
+            "source": "mini_program", "os": "android", "osVersion": "14",
+            "arch": "arm64", "timezone": "Asia/Shanghai",
+            "machineId": mp_machine_id(uid), "userId": uid,
+            "id": expert_id, "name": expert_id, "expertTitle": expert_name,
+            "type": "send_message", "characterCount": 12, "expertType": "agent"}
+
+
 def mp_report(s, uid, nick, events):
     """以小程序指纹向 www.codebuddy.cn/v2/report 批量上报（上游 ReportMPEvent 同款）。"""
     base = mp_base(uid, nick)
@@ -1713,8 +1737,12 @@ def _mp_claim(s, code, log):
         return False
 
 
-def _mp_do_task(s, uid, nick, code, log, events_fn, label):
-    """小程序任务通用流程：mp 查询 → accept → 判据上报 → 回读 → claim。"""
+def _mp_do_task(s, uid, nick, code, log, events_fn, label, target=1):
+    """小程序任务通用流程：mp 查询 → accept → 判据上报 → 回读 → claim。
+
+    target：任务的进度目标（未 accept 时 progress 为 null，必须由调用方提供，
+    否则多元任务（如 Tasks_3 target=5）只会补 1 条）。
+    """
     st, cur, tgt = _mp_prog(s, code)
     if st is None:
         log("   %s: mp 口径未下发该任务，跳过" % label)
@@ -1730,10 +1758,19 @@ def _mp_do_task(s, uid, nick, code, log, events_fn, label):
             log("   %s: accept 失败，跳过" % label)
             return
         time.sleep(WRITE_GAP)
+    # 缺口计算：cur 可能为 None（未激活时 progress 全空）→ 用 target 兜底
+    cur = cur or 0
+    tgt = tgt or target
+    need = max(1, tgt - cur)
     try:
-        evs = events_fn()
-        st_code = mp_report(s, uid, nick, evs)
-        log("   %s: 判据已上报（HTTP %s，%d 个事件）" % (label, st_code, len(evs)))
+        sent = 0
+        for i in range(need):
+            evs = events_fn(i)
+            st_code = mp_report(s, uid, nick, evs)
+            sent += len(evs)
+            if i < need - 1:
+                time.sleep(WRITE_GAP)
+        log("   %s: 判据已上报（%d 次 / %d 个事件，目标 %s）" % (label, need, sent, tgt))
         time.sleep(2.5)
         st2, cur2, tgt2 = _mp_prog(s, code)
         if st2 in ("completed", "claimed"):
@@ -1746,30 +1783,87 @@ def _mp_do_task(s, uid, nick, code, log, events_fn, label):
         log("   %s: 失败 %s" % (label, str(e)[:60]))
 
 
+def _mp_chat_evs(uid, nick, prefix, activity_id=None):
+    """返回一个 events_fn(i)：每次产出一条 mini 对话事件（独立 conversationId）。"""
+    def _fn(i):
+        return [mp_chat_event(uid, nick, "%s-%s-%d" % (prefix, uuid.uuid4(), i),
+                              activity_id=activity_id)]
+    return _fn
+
+
 def t_sequential_tasks(s, uid, nick, log):
-    """小程序成长任务 Sequential_Tasks_1：mini 对话（+100c+5e）"""
+    """小程序成长任务 Sequential_Tasks_1：完成 1 次对话（+100c+5e）"""
     _mp_do_task(s, uid, nick, "Sequential_Tasks_1", log,
-                lambda: [mp_chat_event(uid, nick, "wbmp-" + str(uuid.uuid4()))],
-                "小程序对话任务")
+                _mp_chat_evs(uid, nick, "wbmp"), "小程序对话任务", target=1)
 
 
 def t_sequential_tasks_2(s, uid, nick, log):
-    """小程序成长任务 Sequential_Tasks_2：选中专家 + 完成对话（+200c+5e）"""
-    def _evs():
+    """小程序成长任务 Sequential_Tasks_2：选中专家并完成对话（+200c+5e）
+
+    判据 = 单条 mp 指纹 expert_actual_use（不带 activityId/conversationId）。
+    """
+    def _evs(i):
         eid, ename = _school_fetch_expert(s)
         if not eid:
             eid, ename = "WorkspaceBuilder", "专家"
-        conv = "wbexp-" + str(uuid.uuid4())
-        return mp_expert_use_events(uid, nick, eid, ename, conv)
-    _mp_do_task(s, uid, nick, "Sequential_Tasks_2", log, _evs, "小程序专家对话")
+        return [mp_mini_expert_event(uid, nick, eid, ename)]
+    _mp_do_task(s, uid, nick, "Sequential_Tasks_2", log, _evs, "小程序专家对话", target=1)
+
+
+def t_sequential_tasks_3(s, uid, nick, log):
+    """小程序成长任务 Sequential_Tasks_3：完成 5 次对话（+300c+5e）
+
+    判据与 Tasks_1 同形状（mini chat_request_send 无 activityId），按上报条数累加。
+    """
+    _mp_do_task(s, uid, nick, "Sequential_Tasks_3", log,
+                _mp_chat_evs(uid, nick, "wbmp3"), "小程序对话×5", target=5)
+
+
+def t_sequential_tasks_4(s, uid, nick, log):
+    """小程序成长任务 Sequential_Tasks_4：创建 1 个定时任务（+100c+5e）
+
+    判据：复用 automation_1 同源的桌面事件 automated_task_create_suc
+    （上游实测：PC 口径事件可点亮该 mp 任务）。
+    """
+    def _evs(i):
+        ev = {"eventCode": "automated_task_create_suc", "name": "wb2api 定时任务",
+              "source": "manually", "modelId": "fast-model", "modelIsThinking": True,
+              "connectorCount": 0, "skills": "", "skillCount": 0,
+              "scheduleType": "once", "mode": "LOCAL"}
+        report_desktop_events(s, uid, nick, [ev])
+        return []
+    st, cur, tgt = _mp_prog(s, "Sequential_Tasks_4")
+    if st is None:
+        log("   小程序定时任务: mp 口径未下发该任务，跳过")
+        return
+    if st in ("completed", "claimed"):
+        if st == "completed":
+            _mp_claim(s, "Sequential_Tasks_4", log)
+        else:
+            log("   小程序定时任务: 已领取，跳过")
+        return
+    if st == "not_accepted":
+        if not _mp_accept(s, "Sequential_Tasks_4", log):
+            log("   小程序定时任务: accept 未生效（可能在每日锁定窗口）")
+            return
+        time.sleep(WRITE_GAP)
+    _evs(0)
+    log("   小程序定时任务: 桌面口径 automation 事件已上报")
+    time.sleep(2.5)
+    st2, cur2, tgt2 = _mp_prog(s, "Sequential_Tasks_4")
+    if st2 in ("completed", "claimed"):
+        log("   小程序定时任务: ✅ 已完成 %s/%s" % (cur2, tgt2))
+        if st2 == "completed":
+            _mp_claim(s, "Sequential_Tasks_4", log)
+    else:
+        log("   小程序定时任务: %s %s/%s（服务端暂未关联）" % (st2, cur2, tgt2))
 
 
 def t_school_season(s, uid, nick, log):
     """小程序成长任务 school_season 校园日：mini 对话 + activityId（+100c+5e）"""
     _mp_do_task(s, uid, nick, "school_season", log,
-                lambda: [mp_chat_event(uid, nick, "wbmps-" + str(uuid.uuid4()),
-                                       activity_id=SCHOOL_ACTIVITY_ID)],
-                "校园日活动")
+                _mp_chat_evs(uid, nick, "wbmps", activity_id=SCHOOL_ACTIVITY_ID),
+                "校园日活动", target=1)
 
 
 def t_unknown_tasks(s, uid, nick, log):
@@ -1778,7 +1872,8 @@ def t_unknown_tasks(s, uid, nick, log):
              "Expert_Philanthropy", "Hp_Appearance", "Buddy_App", "Buddy_App_QQ", "Model_chat_GLM5.2",
              "black_cat", "Expert_team_use_3", "first_buddy", "chat_5", "skill_1", "expert_5",
              "template_5", "automation_1", "workstation_expert",
-             "Sequential_Tasks_1", "Sequential_Tasks_2", "school_season"}
+             "Sequential_Tasks_1", "Sequential_Tasks_2", "Sequential_Tasks_3",
+             "Sequential_Tasks_4", "school_season"}
     r = s.get(BASE + "/v2/activity/growth/tasks", timeout=25, verify=False).json()
     for t in r.get("data", {}).get("tasks", []):
         if not isinstance(t, dict):
@@ -2071,8 +2166,8 @@ def school_lottery(s, uid, nick, log):
 
 # ---------- 稳定指纹 & 事件构建（从 task_runner.py 移植） ----------
 def derive_id(uid, salt):
-    """由 uid 稳定派生 36 位 hex 设备标识（md5，幂等：同账号每次相同）。"""
-    return hashlib.md5(("%s:%s" % (salt, uid)).encode()).hexdigest()[:36]
+    """由 uid 稳定派生 36 位 hex 设备标识（sha256[:18]，对齐上游 deriveID，幂等）。"""
+    return hashlib.sha256(("%s:%s" % (salt, uid)).encode()).hexdigest()[:36]
 
 
 def desktop_fingerprint(uid, nick):
@@ -2188,20 +2283,37 @@ def desktop_buddy5_sequence(uid, nick, buddy_id, buddy_name):
     return ev
 
 
+DESKTOP_UA = "WorkBuddy/5.5.6 WorkBuddy/5.5.6 CLI/2.137.1"
+DESKTOP_BASE = "https://copilot.tencent.com"
+
+
 def report_desktop_events(s, uid, nick, events):
-    """以桌面指纹向 {BASE}/v2/report 批量上报；每个事件注入 desktop_fingerprint。"""
+    """桌面指纹上报：copilot.tencent.com/v2/report，**裸数组** + 桌面头族。
+
+    对齐上游 ReportDesktopEvent：desktopBase=chatBase(copilot 域)、body 为裸数组、
+    头含 X-Domain/X-Product/X-Request-ID/X-User-Id + 桌面 UA。
+    """
     fp = desktop_fingerprint(uid, nick)
     arr = []
     for e in events:
-        m = dict(e)
-        m.update(fp)
+        m = dict(fp)          # 先铺指纹
+        m.update(e)           # 业务字段优先（可覆盖同名设备键）
         arr.append(m)
-    out = {"common": {"userId": uid, "userNickname": nick, "ideName": "WorkBuddy",
-                      "ideType": "WorkBuddy", "machineId": fp["machineId"],
-                      "mode": "LOCAL", "userAgent": UA, "os": "win32",
-                      "timezone": "Asia/Shanghai"},
-           "events": arr}
-    return api_retry(s, "POST", BASE + "/v2/report", body=out)
+    hdr = {"Authorization": s.headers.get("Authorization", ""),
+           "Accept": "application/json, text/plain, */*",
+           "Content-Type": "application/json;charset=UTF-8",
+           "User-Agent": DESKTOP_UA,
+           "X-Domain": DESKTOP_BASE, "X-Product": "SaaS",
+           "X-Request-ID": derive_id(uid, "req") + str(int(time.time() * 1000) % 1000000)}
+    if uid:
+        hdr["X-User-Id"] = uid
+    s2 = requests.Session(); s2.trust_env = False
+    try:
+        r = s2.post(DESKTOP_BASE + "/v2/report", json=arr, headers=hdr,
+                    timeout=20, verify=False)
+        return r.status_code
+    except Exception:
+        return 0
 
 
 def report_web_event(s, uid, nick, event_code, page_url, element_id, element_name):
@@ -2312,6 +2424,8 @@ def run_account(idx, acc, do_desktop):
     t_lighthouse(s, uid, nick, log)
     t_sequential_tasks(s, uid, nick, log)
     t_sequential_tasks_2(s, uid, nick, log)
+    t_sequential_tasks_3(s, uid, nick, log)
+    t_sequential_tasks_4(s, uid, nick, log)
     t_school_season(s, uid, nick, log)
     t_badges(s, uid, nick, log)
     t_lottery(s, uid, nick, log)
