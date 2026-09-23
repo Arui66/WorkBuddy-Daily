@@ -60,6 +60,7 @@ pip3 install requests
 | `WORKBUDDY_REFRESH_TOKEN` | ✅ | 每行一个 `手机号:AT:RT`（多账号换行分隔） |
 | `PUSHPLUS_TOKEN` | ⬜ | 可选，PushPlus 推送令牌 |
 | `BARK_URL` | ⬜ | 可选，Bark 推送（iOS），如 `https://api.day.app/xxxxxxxx` |
+| `WECOM_WEBHOOK` | ⬜ | 可选，企业微信群机器人 webhook（或仅 key） |
 
 > 点 **New repository secret**，Name 填上面的名称，Secret 粘贴对应的值，保存。
 
@@ -173,6 +174,7 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 | `WORKBUDDY_REFRESH_TOKEN` | ✅ | 多账号刷新令牌，换行分隔，格式 `手机号:AT:RT`（AT 可留空）。首次运行自动生成 `wb_refresh_tokens.json` 并持续维护 |
 | `PUSHPLUS_TOKEN` | ⬜ | 可选，内置 PushPlus 推送，运行结果推到微信 |
 | `BARK_URL` | ⬜ | 可选，Bark 推送（iOS），如 `https://api.day.app/xxxxxxxx`（自建服务器换域名即可） |
+| `WECOM_WEBHOOK` | ⬜ | 可选，企业微信群机器人。填完整 webhook URL，或只填 key（自动补全域名） |
 
 ---
 
@@ -276,7 +278,8 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 - **🌙 夜猫子规则对齐**：官方为「每日 1 次 × 累计 3 天」，脚本有响应即停，不会一晚空跑多次。
 - **🎁 自动补领奖**：扫描到 `completed` 但未领取的任务会自动补领，不会因中途异常漏掉奖励。
 - **📱 小程序协议对齐**：四事件专家链（`expert_summon_click` → `expert_summoned` → `expert_actual_use` → `chat_request_send`）+ 小程序指纹头族，与官方小程序埋点一致。
-- **📢 双渠道推送**：PushPlus（微信）+ Bark（iOS）可同时配置，互不影响。
+- **📢 三渠道推送**：PushPlus（微信）+ Bark（iOS）+ 企业微信群机器人，可同时配置互不影响。
+  企业微信只需一个 webhook（群设置 → 群机器人 → 添加 → 复制 URL）。
 
 ---
 
