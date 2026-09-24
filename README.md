@@ -84,8 +84,22 @@ Actions → 左侧选 **🌱 WorkBuddy Daily** → **Run workflow** → 选 `mai
 ### ⚠️ 令牌状态与安全（重要）
 - 脚本每次续期都会**轮换刷新令牌**并写入 `wb_refresh_tokens.json`。
 - 工作流内置安全判断：**仅在「私有仓库」中**把 `wb_refresh_tokens.json` 提交回仓库；**公开仓库会自动跳过**，避免 RT 泄露。
-- **强烈建议**：如果你 Fork 本仓库用于部署，**请把 Fork 后的仓库设为 Private**（Settings → General → 拉到底 → Change visibility → Private），这样令牌才能安全持久化，续期不中断。
-- 若使用公开仓库，令牌不会持久化，**每次运行都依赖 `WORKBUDDY_REFRESH_TOKEN` 这个 Secret 提供最新 RT**——需自行保证其不过期。
+- ⚠️ **GitHub 不允许修改 Fork 仓库的可见性**（提示原文：*For security reasons, you cannot change the visibility of a fork*）。所以想要「私有仓库 + 令牌持久化」，**请不要用 Fork**，改用以下任一方式：
+
+  **方式 A：Import（推荐，最省事）**
+  1. 打开 <https://github.com/new/import>
+  2. 在 *Your old repository's clone URL* 填入 `https://github.com/L0NE-6/WorkBuddy-Daily`
+  3. 新仓库名称自取，可见性选 **Private**
+  4. 点 **Begin import**，等导入完成即可
+
+  **方式 B：手动上传**
+  1. 新建一个 **Private** 仓库
+  2. 上传 `workbuddy_daily.py`、`workbuddy_login.py`、`requirements.txt`、`README.md`
+  3. 手动创建 `.github/workflows/workbuddy.yml`（内容照抄本仓库）
+
+  两种方式得到的是**独立仓库**（不是 Fork），令牌才能安全持久化、续期不中断。
+
+- 若继续使用**公开仓库**（含公开 Fork），令牌不会持久化，**每次运行都依赖 `WORKBUDDY_REFRESH_TOKEN` 这个 Secret 提供最新 RT**——需自行保证其不过期（RT 一般 30 天滚动，建议每月更新一次）。
 
 ---
 
