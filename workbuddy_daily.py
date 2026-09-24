@@ -93,6 +93,7 @@
    · 桌面任务：Windows 走真实桌面换血；非 Windows 自动降级为指纹上报（无需真实桌面端）
    · 夜猫子：官方规则为「每日 1 次 × 累计 3 天」，有响应即停，不空跑
    · accept 校验：解析接口逐任务状态 + 回读验证，未落账的自动逐个重试
+   · 前置依赖：accept 报 prerequisite not met 时先补跑前置任务（如先领养首只 Buddy）再重试
    · 微信关注任务：需真人扫码关注满 24 小时，脚本识别并提示，不自动完成
    · 数据文件：wb_refresh_tokens.json 自动生成与维护，无需手动管理
    · 新增账号：变量值末尾追加一行 "手机号:AT:RT" 即可，下次运行自动并入
@@ -102,7 +103,7 @@
 🔒 隐私说明
    脚本不含任何账号、手机号、Token 或设备信息，所有凭据均由环境变量注入。
 """
-import sys, os, json, time, uuid, base64, glob, hashlib, glob as _glob, shutil, subprocess, threading, queue
+import sys, os, re, json, time, uuid, base64, glob, hashlib, glob as _glob, shutil, subprocess, threading, queue
 import requests
 
 
@@ -699,11 +700,13 @@ def t_sign(s, uid, nick, log):
 
 
 def t_accept_all(s, uid, nick, log):
-    """接受全部未接受任务：批量 accept → 解析逐项结果 → 未落账的逐个重试。
+    """接受全部未接受任务：批量 accept → 解析逐项结果 → 前置依赖补救 → 未落账逐个重试。
 
     ⚠️ accept 响应是**逐任务**返回状态：
         {"code":0, "data":{"results":[{"task_code":..,"status":"accepted"|"error","message":..}]}}
     顶层 code=0 只代表请求送达，不代表每项都登记成功（实测存在整体 error 的形态）。
+    ⚠️ 部分任务带前置条件：message 为 `prerequisite not met: <task_code>`（如 first_buddy
+       表示该账号还没有 Buddy 实例），此时先补跑前置任务再重试登记。
     """
     r = s.get(BASE + "/v2/activity/growth/tasks", timeout=25, verify=False).json()
     todo = [t.get("task_code") for t in r.get("data", {}).get("tasks", [])
@@ -712,13 +715,14 @@ def t_accept_all(s, uid, nick, log):
         return
     # ---- 1) 批量接受 + 解析逐项结果 ----
     resp = {}
+    bad = []
     try:
         r2 = s.post(BASE + "/v2/activity/growth/tasks/accept",
                     json={"task_codes": todo}, timeout=20, verify=False)
         d2 = r2.json()
         for x in ((d2.get("data") or {}).get("results") or []):
             if isinstance(x, dict) and x.get("task_code"):
-                resp[x["task_code"]] = (x.get("status") or "", (x.get("message") or "")[:50])
+                resp[x["task_code"]] = (x.get("status") or "", x.get("message") or "")
         ok = [c for c in todo if resp.get(c, ("", ""))[0] == "accepted"]
         bad = [(c, resp[c][0], resp[c][1]) for c in todo if c in resp and resp[c][0] != "accepted"]
         nolog = [c for c in todo if c not in resp]
@@ -726,11 +730,26 @@ def t_accept_all(s, uid, nick, log):
             len(todo), len(ok), len(bad) + len(nolog),
             ("（%d 项无返回）" % len(nolog)) if nolog else ""))
         for c, st, m in bad[:6]:
-            log("      ✗ %s: %s %s" % (c, st, m))
+            log("      ✗ %s: %s %s" % (c, st, m[:70]))
         if len(bad) > 6:
             log("      ...另 %d 项" % (len(bad) - 6))
     except Exception as e:
         log("   📋批量接受异常: %s" % str(e)[:60])
+    # ---- 1.5) 前置依赖补救：message 形如 "prerequisite not met: first_buddy (...)" ----
+    need = {}
+    for c, st, m in bad:
+        if "prerequisite not met:" in m:
+            pcode = m.split("prerequisite not met:", 1)[1].strip().split(" ")[0].strip("()[]")
+            need.setdefault(pcode, []).append(c)
+    for pcode, ptasks in need.items():
+        log("   🧩 %d 项待前置「%s」满足: %s" % (len(ptasks), pcode, ",".join(ptasks[:6])))
+        if pcode == "first_buddy":
+            if ensure_first_buddy(s, uid, nick, log):
+                log("      ✅ Buddy 已就绪，进入重试登记")
+            else:
+                log("      ⚠️ 服务端仍无 Buddy 实例：该账号需先在桌面端/小程序完成一次领养引导，本次 %d 项保持未登记" % len(ptasks))
+        else:
+            log("      ⚠️ 前置「%s」脚本暂无法自动完成" % pcode)
     # ---- 2) 回读验证 + 逐个重试（上游存在 200+OK 但未落账的形态）----
     time.sleep(2)
     pending = [c for c in todo if prog(s, c)[0] in (None, "not_accepted")]
@@ -1499,12 +1518,33 @@ def t_makeup(s, uid, nick, log):
         log("   🩹补签检查异常: %s" % str(e)[:50])
 
 
-def t_first_buddy(s, uid, nick, log):
-    """新账号：领取第一只Buddy"""
-    st, cur, tgt = prog(s, "first_buddy")
-    if st in ("completed", "claimed"):
-        log("   🐱首只Buddy: 已 %s %s/%s" % (st, cur, tgt))
-        return
+def has_buddy(s):
+    """服务端是否已存在 Buddy 实例（旅行 / 其他任务 accept 的真实前置判据）。
+
+    返回 True / False / None（None = 查询失败，状态未知）。
+    """
+    try:
+        v = s.get(BASE + "/v2/activity/growth/buddy/visible", timeout=20, verify=False).json()
+        d = v.get("data") or {}
+        if "has_buddy" in d:
+            return bool(d.get("has_buddy"))
+        info = s.get(BASE + "/v2/activity/growth/buddy/info", timeout=20, verify=False).json()
+        return bool((info.get("data") or {}).get("buddy"))
+    except Exception:
+        return None
+
+
+def ensure_first_buddy(s, uid, nick, log):
+    """确保账号有 Buddy 实例 —— 其余任务 accept 的前置条件。
+
+    服务端对无 Buddy 实例的账号会拒绝登记这些任务：
+        {"status": "error", "message": "prerequisite not met: first_buddy (no buddy instance)"}
+    真实判据是 /buddy/visible 的 has_buddy，而非 first_buddy 任务的 accept_status（任务可
+    已 claimed 但实例缺失）。链路：buddy_agreement_view 上报 → POST /buddy/agreement
+    → POST /buddy/first。返回 True 表示前置已满足。
+    """
+    if has_buddy(s) is True:
+        return True
     try:
         report(s, uid, nick, [{"eventCode": "buddy_agreement_view", "timestamp": int(time.time() * 1000)}])
         time.sleep(2)
@@ -1515,9 +1555,24 @@ def t_first_buddy(s, uid, nick, log):
         credit = (r.get("data") or {}).get("credit", 0)
         energy = (r.get("data") or {}).get("energy", 0)
         log("   🐱首只Buddy: %s (credit=+%s energy=+%s)" % (
-            "成功" if r.get("code") == 0 else str(r.get("msg", ""))[:40], credit, energy))
+            "领养成功" if r.get("code") == 0 else str(r.get("msg", ""))[:40], credit, energy))
+        time.sleep(2)
+        return has_buddy(s) is True
     except Exception as e:
         log("   🐱首只Buddy异常: %s" % str(e)[:40])
+        return False
+
+
+def t_first_buddy(s, uid, nick, log):
+    """领取第一只Buddy（在 t_accept_all 之前执行，满足其他任务的前置条件）"""
+    st, cur, tgt = prog(s, "first_buddy")
+    have = has_buddy(s)
+    if st in ("completed", "claimed") and have is not False:
+        log("   🐱首只Buddy: 已 %s %s/%s" % (st, cur, tgt))
+        return
+    if have is False and st in ("completed", "claimed"):
+        log("   🐱首只Buddy: 任务已 %s，但服务端无 Buddy 实例 → 尝试补建" % st)
+    ensure_first_buddy(s, uid, nick, log)
 
 
 def t_workstation(s, uid, nick, log, tok):
@@ -2463,6 +2518,8 @@ def run_account(idx, acc, do_desktop):
         log("  🖥️ 桌面任务: 已完成（RichMeow/skill_1），跳过")
     # 任务
     log("  ☁️ ── 云端任务 ──")
+    # 前置：无 Buddy 实例时，其余任务 accept 会被服务端拒绝（prerequisite not met: first_buddy）
+    t_first_buddy(s, uid, nick, log)
     t_accept_all(s, uid, nick, log)
     t_sign(s, uid, nick, log)
     t_team_3(s, uid, nick, log)
@@ -2490,7 +2547,6 @@ def run_account(idx, acc, do_desktop):
     t_travel(s, uid, nick, log)
     t_redeem(s, uid, nick, log, streak.get("days"))
     t_gift_compensation(s, uid, nick, log)
-    t_first_buddy(s, uid, nick, log)
     t_makeup(s, uid, nick, log)
     t_workstation(s, uid, nick, log, tok)
     t_unknown_tasks(s, uid, nick, log)
