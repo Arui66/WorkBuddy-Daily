@@ -83,7 +83,7 @@
       Sequential_Tasks_6 完成 10 次对话
       Sequential_Tasks_7 体验灵感功能
       school_season 校园日（+100c+5e）
-      ※ Tasks_1~7 为链式任务，完成一环后次日零点解锁下一环（脚本自动推进）
+      ※ Tasks_1~7 为链式任务，完成一环后次日零点解锁下一环（脚本自动推进，日志给出解锁日期）
    🎮 互动玩法（8 项）
       抽奖 · 盲盒 · Buddy信息 · 派猫猫旅行 · 连签兑换 · 补签卡 · 礼包补偿 · 徽章
 
@@ -1787,23 +1787,36 @@ def _mp_prog(s, code):
     return None, None, None
 
 
-def _mp_accept(s, code, log=None):
-    """小程序口径接受任务（缺头会返回 task not found）。失败时打印服务端原因。"""
+def _mp_accept_res(s, code):
+    """小程序口径 accept，返回 (ok, status, message)。缺 mp 头会返回 task not found。"""
     try:
         r = s.post(BASE + "/v2/activity/growth/tasks/accept", json={"task_codes": [code]},
                    timeout=20, verify=False, headers=MP_HEADER)
         d = r.json()
         results = (d.get("data") or {}).get("results") or []
         status = (results[0].get("status") or "") if results else (d.get("msg") or "")
-        msg = (results[0].get("message") or "")[:50] if results else ""
-        ok = r.status_code == 200 and status == "accepted"
-        if not ok and log:
-            log("      ✗ accept %s: %s %s" % (code, status or "无返回", msg))
-        return ok
+        msg = (results[0].get("message") or "") if results else ""
+        return (r.status_code == 200 and status == "accepted"), status, msg
     except Exception as e:
-        if log:
-            log("      ✗ accept %s 异常: %s" % (code, str(e)[:50]))
+        return False, "", str(e)[:80]
+
+
+def _mp_accept(s, code, log=None):
+    """小程序口径接受任务，失败时打印服务端原因（保留 bool 返回的兼容包装）。"""
+    ok, status, msg = _mp_accept_res(s, code)
+    if not ok and log:
+        log("      ✗ accept %s: %s %s" % (code, status or "无返回", msg[:50]))
+    return ok
+
+
+def _mp_locked_hint(log, label, msg, indent="   "):
+    """链式任务未解锁时输出人类可读提示（含解锁日期）。命中返回 True。"""
+    m = re.search(r"locked until (\d{4}-\d{2}-\d{2})", msg or "")
+    if not m:
         return False
+    log("%s%s: 今日未解锁（链式任务每日零点解锁下一环，%s 零点自动解锁，下次运行自动推进）"
+        % (indent, label, m.group(1)))
+    return True
 
 
 def _mp_claim(s, code, log):
@@ -1837,8 +1850,11 @@ def _mp_do_task(s, uid, nick, code, log, events_fn, label, target=1):
             log("   %s: 已领取，跳过" % label)
         return
     if st == "not_accepted":
-        if not _mp_accept(s, code, log):
-            log("   %s: accept 失败，跳过" % label)
+        ok, a_status, a_msg = _mp_accept_res(s, code)
+        if not ok:
+            log("      ✗ accept %s: %s %s" % (code, a_status or "无返回", a_msg[:50]))
+            if not _mp_locked_hint(log, label, a_msg):
+                log("   %s: accept 失败，跳过" % label)
             return
         time.sleep(WRITE_GAP)
     # 缺口计算：cur 可能为 None（未激活时 progress 全空）→ 用 target 兜底
@@ -1926,8 +1942,11 @@ def t_sequential_tasks_4(s, uid, nick, log):
             log("   小程序定时任务: 已领取，跳过")
         return
     if st == "not_accepted":
-        if not _mp_accept(s, "Sequential_Tasks_4", log):
-            log("   小程序定时任务: 今日未解锁（链式任务每日零点解锁下一环，明日自动重试）")
+        ok, a_status, a_msg = _mp_accept_res(s, "Sequential_Tasks_4")
+        if not ok:
+            log("      ✗ accept Sequential_Tasks_4: %s %s" % (a_status or "无返回", a_msg[:50]))
+            if not _mp_locked_hint(log, "小程序定时任务", a_msg):
+                log("   小程序定时任务: accept 失败，跳过")
             return
         time.sleep(WRITE_GAP)
     _evs(0)
