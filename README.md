@@ -252,7 +252,7 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 | 7 | `Sequential_Tasks_7` 体验灵感功能 | — | mp 指纹 `playbook_cta_click` + `playbook_prompt_send` |
 | 8 | `school_season` 参与校园日有奖活动 | +100 积分 +5 能量 | 需 `activityId` |
 
-> 🔗 **链式机制**：Tasks_1~7 完成一环后**次日零点**解锁下一环（accept 返回 `task locked until <日期>`），脚本每次运行自动检测并推进，无需人工干预。
+> 🔗 **链式机制**：Tasks_1~7 完成一环后**次日零点**解锁下一环（accept 返回 `task locked until <日期>`），脚本每次运行自动检测并推进，无需人工干预；日志会直接给出解锁日期与「今日未解锁」提示，不会被当成失败。
 >
 > ✅ 已验证到账：Tasks_1~4 + 校园日 = **+800 积分 +20 能量**（Tasks_5~7 待链式解锁）
 
