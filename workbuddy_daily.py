@@ -13,7 +13,7 @@
    🔐 Token 永续     只配一个刷新令牌变量，脚本自动续期（90 天滚动，永不过期）
    ✅ 成长任务       18 项云端/桌面全覆盖 + 轻量云专家（仅公益专家需真实捐款）
    🏫 开学季活动     分享/对话/桌面对话/专家 + 幸运大转盘（含瑞幸/KFC/酷狗实物券）
-   📱 小程序任务     5 项：对话/专家/5次对话/定时任务/校园日（共 +800c+25e，链式每日解锁）
+   📱 小程序任务     8 项：Tasks_1~7 链式任务 + 校园日（已验证 +800c+20e，每日零点解锁一环）
    🎮 8 项互动玩法   抽奖、盲盒、Buddy、派猫猫旅行、连签兑换、补签卡、礼包补偿、徽章
    💰 三类查询       积分套餐（剩余/总量/已用）、用量统计、成长数据（等级/连签/能量）
    🎁 自动领奖       扫描全部已完成任务自动领取；completed 未领的自动补领
@@ -74,13 +74,16 @@
       分享活动给好友 · 与AI对话3次 · 桌面端对话1次 · 召唤开学季专家
       ❌ 学生认证（需微信实名，人工环节）
       🎰 幸运大转盘：抽到余额为 0（积分 6/66 + 瑞幸/KFC/酷狗实物券）
-   📱 小程序成长任务（5 项，需 X-Client-Platform: miniprogram 头）
+   📱 小程序成长任务（8 项，需 X-Client-Platform: miniprogram 头）
       Sequential_Tasks_1 完成 1 次对话（+100c+5e）
       Sequential_Tasks_2 选中专家并完成对话（+200c+5e）
       Sequential_Tasks_3 完成 5 次对话（+300c+5e）
       Sequential_Tasks_4 创建 1 个定时任务（+100c+5e）
+      Sequential_Tasks_5 使用 1 次 GLM5.2（+100c+5e）
+      Sequential_Tasks_6 完成 10 次对话
+      Sequential_Tasks_7 体验灵感功能
       school_season 校园日（+100c+5e）
-      ※ Tasks_1~7 为链式任务，完成一环后次日零点解锁下一环
+      ※ Tasks_1~7 为链式任务，完成一环后次日零点解锁下一环（脚本自动推进）
    🎮 互动玩法（8 项）
       抽奖 · 盲盒 · Buddy信息 · 派猫猫旅行 · 连签兑换 · 补签卡 · 礼包补偿 · 徽章
 
@@ -145,6 +148,9 @@ TASK_NAME_CN = {
     "Sequential_Tasks_2": "小程序专家对话",
     "Sequential_Tasks_3": "小程序对话5次",
     "Sequential_Tasks_4": "小程序定时任务",
+    "Sequential_Tasks_5": "小程序GLM5.2",
+    "Sequential_Tasks_6": "小程序对话10次",
+    "Sequential_Tasks_7": "小程序灵感功能",
     "school_season": "校园日活动",
 }
 
@@ -1654,6 +1660,25 @@ def mp_expert_use_events(uid, nick, expert_id, expert_name, conv_id, activity_id
     return evs
 
 
+def mp_model_chat_event(uid, nick, conv_id, model_id="glm-5.2", model_name="GLM-5.2"):
+    """Sequential_Tasks_5 判据：mini chat_request_send + 模型字段（上游 mpsrc 实测形状）。"""
+    ev = mp_chat_event(uid, nick, conv_id)
+    ev["requestModelId"] = model_id
+    ev["requestModelName"] = model_name
+    return ev
+
+
+def mp_playbook_events(uid, nick, case_id="01-ProductDesign", case_name="产品设计"):
+    """Sequential_Tasks_7 判据：mp 指纹 playbook_cta_click + playbook_prompt_send。"""
+    conv = "wb2api-mp-pb-" + str(uuid.uuid4())
+    base = {"id": case_id, "name": case_name, "type": "document",
+            "categoryId": "", "categoryName": "", "skills": "", "skillNames": ""}
+    cta = dict(base, eventCode="playbook_cta_click", source="discover", position=1, extVersion="2.2.8")
+    send = dict(base, eventCode="playbook_prompt_send", source="discover", promptLength=96,
+                isOfficial=1, conversationId=conv, extVersion="2.2.8")
+    return [cta, send]
+
+
 def mp_mini_expert_event(uid, nick, expert_id, expert_name):
     """Sequential_Tasks_2 判据：mp 指纹 expert_actual_use（上游小程序源码实测形状）。
 
@@ -1862,6 +1887,28 @@ def t_sequential_tasks_4(s, uid, nick, log):
         log("   小程序定时任务: %s %s/%s（服务端暂未关联）" % (st2, cur2, tgt2))
 
 
+def t_sequential_tasks_5(s, uid, nick, log):
+    """小程序成长任务 Sequential_Tasks_5：使用 1 次 GLM5.2 模型（+100c+5e）"""
+    def _evs(i):
+        return [mp_model_chat_event(uid, nick, "wbmp5-%s-%d" % (uuid.uuid4(), i))]
+    _mp_do_task(s, uid, nick, "Sequential_Tasks_5", log, _evs, "小程序GLM5.2", target=1)
+
+
+def t_sequential_tasks_6(s, uid, nick, log):
+    """小程序成长任务 Sequential_Tasks_6：完成 10 次对话（target 以服务端下发为准）"""
+    _mp_do_task(s, uid, nick, "Sequential_Tasks_6", log,
+                _mp_chat_evs(uid, nick, "wbmp6"), "小程序对话×10", target=10)
+
+
+def t_sequential_tasks_7(s, uid, nick, log):
+    """小程序成长任务 Sequential_Tasks_7：体验灵感功能"""
+    def _evs(i):
+        evs = mp_playbook_events(uid, nick)
+        report_desktop_events(s, uid, nick, evs)   # PC 口径补一发（判据疑 PC/mp 双侧）
+        return evs
+    _mp_do_task(s, uid, nick, "Sequential_Tasks_7", log, _evs, "小程序灵感功能", target=1)
+
+
 def t_school_season(s, uid, nick, log):
     """小程序成长任务 school_season 校园日：mini 对话 + activityId（+100c+5e）"""
     _mp_do_task(s, uid, nick, "school_season", log,
@@ -1876,7 +1923,8 @@ def t_unknown_tasks(s, uid, nick, log):
              "black_cat", "Expert_team_use_3", "first_buddy", "chat_5", "skill_1", "expert_5",
              "template_5", "automation_1", "workstation_expert",
              "Sequential_Tasks_1", "Sequential_Tasks_2", "Sequential_Tasks_3",
-             "Sequential_Tasks_4", "school_season"}
+             "Sequential_Tasks_4", "Sequential_Tasks_5",
+             "Sequential_Tasks_6", "Sequential_Tasks_7", "school_season"}
     r = s.get(BASE + "/v2/activity/growth/tasks", timeout=25, verify=False).json()
     for t in r.get("data", {}).get("tasks", []):
         if not isinstance(t, dict):
@@ -2431,6 +2479,9 @@ def run_account(idx, acc, do_desktop):
     t_sequential_tasks_2(s, uid, nick, log)
     t_sequential_tasks_3(s, uid, nick, log)
     t_sequential_tasks_4(s, uid, nick, log)
+    t_sequential_tasks_5(s, uid, nick, log)
+    t_sequential_tasks_6(s, uid, nick, log)
+    t_sequential_tasks_7(s, uid, nick, log)
     t_school_season(s, uid, nick, log)
     t_badges(s, uid, nick, log)
     t_lottery(s, uid, nick, log)
