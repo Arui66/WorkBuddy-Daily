@@ -202,13 +202,13 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 
 | # | 任务 | 说明 |
 | :-: | :--- | :--- |
-| 1 | 设计创意模式 | 造画布事件上报 |
-| 2 | 探索优秀灵感 | playbook 事件上报 |
+| 1 | 设计创意模式 | 真实对话 + 桌面链（`wbx_design_canvas_task_create` / `_open`） |
+| 2 | 探索优秀灵感 | `playbook_cta_click` + `playbook_prompt_send`（JOIN 真实会话） |
 | 3 | 桌面端对话 | Windows 真实桌面 / 非 Windows 指纹上报（**无需真实桌面端**） |
 | 4 | 尝鲜热门技能 | Windows 真实桌面 / 非 Windows 指纹上报（**无需真实桌面端**） |
 | 5 | 体验资料库 | web 域点击事件 |
 | 6 | 腾讯轻量云专家 | 真实对话 + 桌面链（`has_expert`）+ `actual_use(mode:LOCAL)` |
-| 7 | 和平精英主题 | 主题切换 API + 遥测 |
+| 7 | 和平精英主题 | 主题目录取真 `resource_key` + `appearance_skin_apply` 遥测 |
 | 8 | 发现应用 | Buddy 五连事件链 |
 | 9 | 企鹅教师助手 | Buddy 五连事件链 |
 | 10 | GLM-5.2模型对话 | 真实 AI 对话 |
@@ -217,7 +217,7 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 | 13 | 召唤3次专家团 | 真实团队对话 + 遥测 |
 | 14 | 召唤5次专家 | expert 事件上报 |
 | 15 | 使用5个模板 | 服务端真实场景 id（`/console/as/support/scenes`）+ 事件组上报 |
-| 16 | 设置自动化任务 | automation 事件上报 |
+| 16 | 设置自动化任务 | 真实 rrule 定时对象形状 + automation 事件上报 |
 | 17 | 领取Buddy | 领养链路（+300c+8e） |
 | 18 | ~~公益专家~~ | ❌ **需真实捐款，脚本不做** |
 | — | ~~工作台搭建师~~ | ⚠️ **服务端已下线**（脚本仍兼容，出现时会自动处理） |
@@ -300,6 +300,8 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 - **🧩 前置依赖自动补救**：accept 逐项 `message` 里解析 `prerequisite not met: <任务>`，先补跑前置任务（如首只 Buddy 领养）再重试登记，新账号不再卡在「17 项未落账」。
 - **🎯 真实会话 id**：专家/技能类任务的 `requestId` / `messageId` 取自真实对话的服务端消息 id（`cmb-` 形态），并对齐 `has_expert` / `mode: LOCAL` 口径——上游 panel 三账号实测点亮 `Expert_lighthouse`。
 - **🎁 领奖口径对齐**：连登奖励按服务端 `redemption_status` 判定档位（已领不重发请求），实物奖自动提示填写收货地址。
+- **📈 签到读数**：签到后读签到活动状态，报告直接给出**连签天数 / 累计积分 / 距下一次连签奖励的天数**。
+- **🧭 生态口径对齐**：画布 / 灵感走真实对话 + 桌面链，主题目录动态取真 `resource_key`，自动化任务用真实 rrule 对象；抽奖（`lottery/summary`）与兑换（`redeem/summary`）均带备用接口口径。
 - **🏫 开学季活动**：自动执行开学季限时任务（分享 / 对话 / 专家）+ 幸运大转盘抽奖。
 - **🌙 夜猫子规则对齐**：官方为「每日 1 次 × 累计 3 天」，脚本有响应即停，不会一晚空跑多次。
 - **🎁 自动补领奖**：扫描到 `completed` 但未领取的任务会自动补领，不会因中途异常漏掉奖励。
