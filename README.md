@@ -4,7 +4,7 @@
 
 **WorkBuddy 成长中心 · 全能签到脚本 · 单文件自包含**
 
-🔐 Token 永续 · ✅ 38 项自动化任务 · 🏫 开学季活动 · 📱 小程序任务 · 🖥️ 桌面换血 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📊 全中文报告 · 📢 三渠道推送 · 🐧 青龙友好 · ☁️ GitHub Actions
+🔐 Token 永续 · ✅ 38 项自动化 · 📱 小程序链式任务 · 🏫 开学季（活动期自适应） · 🖥️ 桌面换血 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📊 全中文报告 · 📢 三渠道推送 · 🐧 青龙友好 · ☁️ GitHub Actions
 
 <img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white" />
 <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20%E9%9D%92%E9%BE%99-4EAA25?style=for-the-badge&logo=linux&logoColor=white" />
@@ -155,6 +155,7 @@ python workbuddy_login.py --verify           # 登录后额外验证 RT 是否�
    ```
    C:/Users/你的用户名/AppData/Local/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info
    ```
+   > ℹ️ 新版桌面端文件名是 `workbuddy-desktop-ai.info`（旧版为 `workbuddy-desktop.info`），两个都看一下即可。
 3. 在文件里搜索 `accessToken` 和 `refreshToken`，各自后面跟一串 **`eyJ` 开头**的长字符串，那就是 **AT** 和 **RT**
 4. 按格式拼一行，多账号写多行：
    ```
@@ -356,12 +357,12 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
    ✅ 全部完成！
 
 📊 ══ 总计 ══
-👥 共2个账号，任务完成 34/36 项
+👥 共2个账号，任务完成 36/38 项
 
    · 桌面端对话（1个账号待完成）
    · 尝鲜热门技能（1个账号待完成）
 
-🕐 2026-09-12 07:05
+🕐 2026-09-27 07:05
 ```
 
 ---
