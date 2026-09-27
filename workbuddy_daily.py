@@ -98,6 +98,10 @@
    · 前置依赖：accept 报 prerequisite not met 时先补跑前置任务（如先领养首只 Buddy）再重试
    · 真实会话 id：专家/技能任务的 requestId/messageId 取自真实对话的服务端消息 id（cmb- 形态）
    · 真实场景表：模板任务取服务端 /console/as/support/scenes 的 id（拉不到回落内置表）
+   · 签到读数：签到后读 /billing/meter/checkin-activity-status（连签天数/累计积分/连签奖励日）
+   · 画布与灵感：真实对话 + 桌面链（wbx_design_canvas_* / playbook_cta_click），失败回落 web 裸事件
+   · 主题目录：和平精英主题取 /v2/operation-platform/appearance/resources 真 resource_key + meta
+   · 备用口径：抽奖的 chances 支持 lottery/summary、兑换状态支持 redeem/summary 补位
    · 微信关注任务：需真人扫码关注满 24 小时，脚本识别并提示，不自动完成
    · 数据文件：wb_refresh_tokens.json 自动生成与维护，无需手动管理
    · 新增账号：变量值末尾追加一行 "手机号:AT:RT" 即可，下次运行自动并入
@@ -650,7 +654,7 @@ def webchat(s, conv_name, prompt, meta=None, model="glm-5.2"):
     return conv_id, txt
 
 
-def chat_request_events(uid, nick, conv_id, prompt, txt):
+def chat_request_events(uid, nick, conv_id, prompt, txt, mode="craft"):
     now = int(time.time() * 1000)
     rid = "cmb-" + str(uuid.uuid4())
     common = {"userId": uid, "userNickname": nick, "ideName": "web-Agents", "ideType": "web-Agents",
@@ -658,6 +662,7 @@ def chat_request_events(uid, nick, conv_id, prompt, txt):
               "timezone": "Asia/Shanghai"}
     return [
         {"eventCode": "chat_request_send", "timestamp": now, "reportDelay": 0, **common,
+         "mode": mode,
          "conversationId": conv_id, "requestId": rid, "requestModelId": "glm-5.2",
          "requestModelName": "GLM-5.2", "inputLength": len(prompt), "customAgentName": ""},
         {"eventCode": "chat_request_response", "timestamp": now + 100, "reportDelay": 0, **common,
@@ -705,16 +710,44 @@ def queryUsage(s):
 
 
 # ---------- 各任务配方（全部经过实测） ----------
-def t_sign(s, uid, nick, log):
-    r = s.post(BASE + "/v2/billing/meter/daily-checkin", json={}, timeout=20, verify=False)
+def _checkin_tail(s):
+    """签到活动读数尾注：连签天数 / 累计积分 / 连签奖励日（只读，失败返回空串）。
+
+    上游多仓共用口径：POST /v2/billing/meter/checkin-activity-status 返回
+    today_checked_in / streak_days / total_credits / is_streak_day / next_streak_day。
+    """
     try:
-        d = r.json()
-        if d.get("code") in (0, 200):
-            log("   ✅签到成功 +%s积分 连签%s天" % (d.get("data", {}).get("credit", "?"), d.get("data", {}).get("streak_days", "?")))
-        else:
-            log("   ✅签到: %s" % (d.get("msg", "")[:40] or "已签到"))
+        sd = (s.post(BASE + "/v2/billing/meter/checkin-activity-status", json={}, timeout=20,
+                     verify=False).json().get("data") or {})
+        parts = []
+        if sd.get("streak_days") is not None:
+            parts.append("连签%s天" % sd["streak_days"])
+        if sd.get("total_credits") is not None:
+            parts.append("累计%s" % sd["total_credits"])
+        if sd.get("is_streak_day"):
+            parts.append("🎉今日为连签奖励日")
+        elif sd.get("next_streak_day"):
+            parts.append("距下一连签奖励 %s 天" % sd["next_streak_day"])
+        return "（%s）" % "，".join(parts) if parts else ""
     except Exception:
-        log("   签到请求失败")
+        return ""
+
+
+def t_sign(s, uid, nick, log):
+    """每日签到 + 签到活动读数（连签天数 / 累计积分 / 连签奖励日）"""
+    credit = None; msg = ""
+    try:
+        d = s.post(BASE + "/v2/billing/meter/daily-checkin", json={}, timeout=20, verify=False).json()
+        if d.get("code") in (0, 200):
+            credit = (d.get("data") or {}).get("credit")
+        msg = (d.get("msg") or "")[:40]
+    except Exception:
+        msg = "签到请求失败"
+    tail = _checkin_tail(s)
+    if credit is not None:
+        log("   ✅签到成功 +%s积分%s" % (credit, tail))
+    else:
+        log("   ✅签到: %s%s" % (msg or "今天已签到，请明天再来", tail))
 
 
 def t_accept_all(s, uid, nick, log):
@@ -842,7 +875,29 @@ def t_buddy_apps(s, uid, nick, log):
     log("   发现应用/企鹅教师助手: %s / %s" % (prog(s, "Buddy_App")[0], prog(s, "Buddy_App_QQ")[0]))
 
 
+def _fetch_hp_theme(s):
+    """appearance/resources 目录里找和平精英主题 → (resource_key, meta)；失败回落内置表。
+
+    上游多仓共用口径：POST /v2/operation-platform/appearance/resources
+    {platform:client, kind:theme, version, lang} → resources[] 含 id/name/vip_level/series。
+    """
+    try:
+        d = s.post(BASE + "/v2/operation-platform/appearance/resources",
+                   json={"platform": "client", "kind": "theme", "version": "5.5.6", "lang": "zh-CN"},
+                   timeout=20, verify=False).json()
+        for x in ((d.get("data") or {}).get("resources") or []):
+            nm = x.get("name") or ""
+            if "和平精英" in nm or "pubg" in (x.get("id") or "").lower():
+                return x.get("id") or THEME_KEY, {"name": nm,
+                                                      "vipLevel": x.get("vip_level", "free"),
+                                                      "series": x.get("series", "craft")}
+    except Exception:
+        pass
+    return THEME_KEY, {"name": "和平精英激战金秋", "vipLevel": "free", "series": "craft"}
+
+
 def t_theme(s, uid, nick, log):
+    """和平精英主题（Hp_Appearance）：主题目录取真 resource_key + meta，set 后补 skin_apply 事件"""
     st, cur, tgt = prog(s, "Hp_Appearance")
     if st is None:
         log("   和平精英主题: 不在任务列表，跳过")
@@ -850,13 +905,15 @@ def t_theme(s, uid, nick, log):
     if st in ("completed", "claimed"):
         log("   和平精英主题: 已 %s" % st)
         return
-    r = s.post(BASE + "/portal/user-asset/appearance/set", json={"kind": "theme", "resource_key": THEME_KEY},
+    key, meta = _fetch_hp_theme(s)
+    r = s.post(BASE + "/portal/user-asset/appearance/set", json={"kind": "theme", "resource_key": key},
                timeout=20, verify=False)
     if r.json().get("code") == 0:
         time.sleep(2)
         report(s, uid, nick, [{"eventCode": "appearance_skin_apply", "action": "apply",
-                               "source": "settings_close", "id": THEME_KEY, "vipLevel": "free",
-                               "series": "craft", "type": "personal"}])
+                               "source": "settings_close", "id": key,
+                               "vipLevel": meta["vipLevel"], "series": meta["series"],
+                               "type": "personal"}])
         time.sleep(6)
     log("   和平精英主题: %s" % prog(s, "Hp_Appearance")[0])
 
@@ -905,7 +962,7 @@ def t_black_cat(s, uid, nick, log):
     for attempt in range(3):
         conv_id, txt = webchat(s, "night", prompts[attempt % len(prompts)])
         if txt:
-            evs, _ = chat_request_events(uid, nick, conv_id, "聊天", txt)
+            evs, _ = chat_request_events(uid, nick, conv_id, "聊天", txt, mode="night")
             report(s, uid, nick, evs)
             log("   夜猫子: 第%d次对话 ✅（回复%d字）——当日计数完成" % (attempt + 1, len(txt)))
             break
@@ -967,15 +1024,18 @@ def t_template_5(s, uid, nick, log):
         st, cur, tgt = prog(s, "template_5")
         if st in ("completed", "claimed") or (cur or 0) >= (tgt or 5):
             break
+        rid = "wb2api-tpl-%d-%s" % (int(time.time() * 1000), tid)
         report(s, uid, nick, [
             {"eventCode": "agent_task_created", "source": "CLOUD", "name": "", "mode": "craft",
              "requestModelId": "default", "action": tid, "has_template": True, "template_id": tid,
-             "template_name": tname},
+             "template_name": tname, "requestId": rid},
             {"eventCode": "agent_task_created_with_template", "templateId": tid, "templateName": tname,
-             "isCustomModel": True, "id": tid, "name": tname},
-            {"eventCode": "template_used", "templateId": tid, "templateName": tname,
-             "id": tid, "name": tname, "source": "growth-center"},
-            {"eventCode": "playbook_prompt_send", "ext1": str(uuid.uuid4()), "requestId": str(uuid.uuid4()),
+             "template_id": tid, "mode": "working", "isCustomModel": True, "id": tid, "name": tname,
+             "requestId": rid},
+            {"eventCode": "template_used", "template_id": tid, "templateId": tid,
+             "templateName": tname, "task_mode": "working", "id": tid, "name": tname,
+             "source": "growth-center"},
+            {"eventCode": "playbook_prompt_send", "ext1": str(uuid.uuid4()), "requestId": rid,
              "id": tid, "name": tname, "type": "other", "promptLength": 30, "isOfficial": 1,
              "source": "growth-center"}])
         time.sleep(2)
@@ -983,29 +1043,87 @@ def t_template_5(s, uid, nick, log):
     log("   使用5个模板: %s %s/%s" % (st, cur, tgt))
 
 
-def t_canvas_automation(s, uid, nick, log):
-    """设计创意模式 + 自动化任务 + 优秀灵感"""
-    st, cur, tgt = prog(s, "create_canvas")
-    if st not in ("completed", "claimed"):
-        report(s, uid, nick, [{"eventCode": "agent_task_created", "source": "CLOUD", "name": "", "mode": "craft",
-                               "requestModelId": "default", "task_mode": "design"},
-                              {"eventCode": "wbx_design_canvas_task_create"}])
+PLAYBOOK_CASE = {"id": "01-ProductDesign", "name": "产品设计", "type": "document"}
+
+
+def _desktop_run(s, uid, nick, conv_name, prompt, extra_events):
+    """真实对话 + 6 连桌面链 + 追加事件（桌面域上报）；返回是否已发出。"""
+    try:
+        cid, _t, mid = webchat2(s, conv_name, prompt)
+        if not (cid and mid):
+            return False
+        evs = desktop_chat_sequence(uid, nick, cid, mid, mid)
+        evs.extend(extra_events(cid, mid))
+        report_desktop_events(s, uid, nick, evs)
         time.sleep(3)
+        return True
+    except Exception:
+        return False
+
+
+def t_canvas_automation(s, uid, nick, log):
+    """设计创意模式 + 自动化任务 + 优秀灵感
+
+    画布 / 灵感优先走「真实对话 + 桌面链 + 专属事件组」：上游 task-auto / task_runner 实测形状
+    为 wbx_design_canvas_task_create(+open) 与 playbook_cta_click/playbook_prompt_send 挂在真实
+    conversationId/requestId 上；未点亮时回落旧的 web 域裸事件。自动化任务用真实 rrule 对象形状。
+    """
+    if prog(s, "create_canvas")[0] not in ("completed", "claimed"):
+        def _canvas_evs(cid, mid):
+            return [{"eventCode": "wbx_design_canvas_task_create", "conversationId": cid, "requestId": mid,
+                     "source": "summon_keyword", "isCustomModel": False, "name": "", "inputLength": 12,
+                     "id": "wbx-canvas-%d" % int(time.time() * 1000), "cost": 0, "isSuccessful": True},
+                    {"eventCode": "wbx_design_canvas_open", "conversationId": cid, "requestId": mid,
+                     "id": "ardot-file-" + mid[-8:], "source": "summon_keyword", "type": "page",
+                     "cost": 13000, "isSuccessful": True}]
+        if not _desktop_run(s, uid, nick, "canvas", "帮我在设计创意画布里做一张活动海报", _canvas_evs) \
+                or prog(s, "create_canvas")[0] not in ("completed", "claimed"):
+            report(s, uid, nick, [{"eventCode": "agent_task_created", "source": "CLOUD", "name": "", "mode": "craft",
+                                   "requestModelId": "default", "task_mode": "design"},
+                                  {"eventCode": "wbx_design_canvas_task_create"}])
+            time.sleep(3)
     st, cur, tgt = prog(s, "automation_1")
     if st not in ("completed", "claimed"):
         report(s, uid, nick, [{"eventCode": "agent_task_created", "source": "CLOUD", "name": "", "mode": "craft",
                                "requestModelId": "default", "task_mode": "automation",
                                "isAutomationBackground": True},
-                              {"eventCode": "automated_task_create_suc", "action": "create"},
+                              {"eventCode": "automated_task_create_suc", "action": "create",
+                               "name": "每周五自动生成周报", "source": "manually",
+                               "modelId": "deepseek-v4-flash", "modelIsThinking": False,
+                               "expertId": "", "expertMarketplace": "", "connectorIds": "",
+                               "connectorCount": 0, "skills": "", "skillCount": 0,
+                               "scheduleType": "recurring", "pushToWeChat": False,
+                               "pushToWecomBot": False,
+                               "schedule": {"type": "recurring",
+                                            "rrule": "FREQ=WEEKLY;BYDAY=FR;BYHOUR=9;BYMINUTE=0"},
+                               "prompt": "每周五自动整理本周工作，生成一份周报。"},
                               {"eventCode": "automated_task_execute", "action": "execute"}])
         time.sleep(3)
-    st, cur, tgt = prog(s, "playbook_prompt")
-    if st not in ("completed", "claimed"):
-        report(s, uid, nick, [{"eventCode": "playbook_prompt_send", "ext1": str(uuid.uuid4()),
-                               "requestId": str(uuid.uuid4()), "id": "01-ProductDesign", "name": "产品设计",
-                               "type": "other", "promptLength": 30, "isOfficial": 1, "source": "growth-center"}])
-        time.sleep(3)
-    log("   设计/自动化/灵感: %s / %s / %s" % (prog(s, "create_canvas")[0], prog(s, "automation_1")[0], prog(s, "playbook_prompt")[0]))
+    if prog(s, "playbook_prompt")[0] not in ("completed", "claimed"):
+        def _pb_evs(cid, mid):
+            payload = {"id": PLAYBOOK_CASE["id"], "name": PLAYBOOK_CASE["name"],
+                       "type": PLAYBOOK_CASE["type"], "categoryId": "", "categoryName": ""}
+            ev1 = {"eventCode": "web_element_click", "pageName": "playbook_detail",
+                   "elementId": "playbook_ctaClick", "elementName": PLAYBOOK_CASE["name"],
+                   "source": "discover"}
+            ev2 = dict(payload); ev2.update({"eventCode": "playbook_cta_click", "source": "discover",
+                                            "position": 0})
+            ev3 = dict(payload); ev3.update({"eventCode": "playbook_prompt_send", "conversationId": cid,
+                                            "requestId": mid, "promptLength": 30, "isOfficial": 1,
+                                            "skills": "", "skillNames": "", "expertId": "",
+                                            "expertName": "", "query": "", "source": "discover",
+                                            "ext1": "discover"})
+            return [ev1, ev2, ev3]
+        if not _desktop_run(s, uid, nick, "playbook", "用这个案例帮我做一个同款", _pb_evs) \
+                or prog(s, "playbook_prompt")[0] not in ("completed", "claimed"):
+            report(s, uid, nick, [{"eventCode": "playbook_prompt_send", "ext1": str(uuid.uuid4()),
+                                   "requestId": str(uuid.uuid4()), "id": PLAYBOOK_CASE["id"],
+                                   "name": PLAYBOOK_CASE["name"],
+                                   "type": "other", "promptLength": 30, "isOfficial": 1,
+                                   "source": "growth-center"}])
+            time.sleep(3)
+    log("   设计/自动化/灵感: %s / %s / %s" % (prog(s, "create_canvas")[0], prog(s, "automation_1")[0],
+                                             prog(s, "playbook_prompt")[0]))
 
 
 def t_glm52(s, uid, nick, log):
@@ -1022,6 +1140,13 @@ def t_lottery(s, uid, nick, log):
         r = s.get(BASE + "/v2/activity/growth/lottery/chances", timeout=20, verify=False).json()
         cd = r.get("data", {})
         chances = cd.get("balance", cd.get("chances", cd.get("remaining", 0)))
+        if not chances:   # 备用口径：/lottery/summary 的 chances
+            try:
+                sd = s.get(BASE + "/v2/activity/growth/lottery/summary", timeout=20,
+                         verify=False).json().get("data") or {}
+                chances = sd.get("chances", sd.get("balance", 0))
+            except Exception:
+                chances = 0
         if not chances or chances <= 0:
             log("   🎰抽奖: 无次数")
             return
@@ -1145,6 +1270,15 @@ def t_redeem(s, uid, nick, log, streak_days=None):
                   "28d": rs.get("tier_28d_status", "")}
     except Exception:
         pass
+    if not any(status.values()):   # 备用口径：/redeem/summary 的 starter/advanced/legendary_status
+        try:
+            rm = s.get(BASE + "/v2/activity/growth/redeem/summary", timeout=20,
+                     verify=False).json().get("data") or {}
+            for tier, key in (("7d", "starter"), ("14d", "advanced"), ("28d", "legendary")):
+                if rm.get(key + "_status"):
+                    status[tier] = rm[key + "_status"]
+        except Exception:
+            pass
     for tier, need, label in tiers:
         tst = status.get(tier, "")
         if tst == "claimed":
