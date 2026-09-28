@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v2.4
+🌱 WorkBuddy Daily - 全能签到脚本 v2.5
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -64,6 +64,7 @@
       1XXXXXXXXXX:eyJhbGciOiJSUzI1NiIs...:eyJhbGciOiJIUzUxMiIs...
 
    ⚠️ 注意：AT 和 RT 之间用英文冒号 : 分隔，等号后面的引号不要带
+   ⚠️ 顺序不能反（手机号:AT:RT），且要取 WorkBuddy 自己的文件（目录下可能还有别的应用）
    ⚠️ RT 是你唯一的续期凭据，泄露了别人就能操作你的账号
 
 📦 任务清单
@@ -107,6 +108,8 @@
    · 主题目录：和平精英主题取 /v2/operation-platform/appearance/resources 真 resource_key + meta
    · 备用口径：抽奖的 chances 支持 lottery/summary、兑换状态支持 redeem/summary 补位
    · 凭据失效隔离：AT/RT 过期或格式错只跳过该账号并给出排障提示，不再整轮崩溃
+   · 凭据体检：续期前本地看 RT/AT 结构与签发域（typ=Offline / codebuddy.cn realm），
+     把 12153 token format error 提前翻译成“粘反了 / 粘错了文件 / 截断了”
    · 微信关注任务：需真人扫码关注满 24 小时，脚本识别并提示，不自动完成
    · 数据文件：wb_refresh_tokens.json 自动生成与维护，无需手动管理
    · 新增账号：变量值末尾追加一行 "手机号:AT:RT" 即可，下次运行自动并入
@@ -270,7 +273,8 @@ def _parse_env_tokens(raw):
         line = line.strip()
         if not line:
             continue
-        parts = line.split(":")
+        # maxsplit=2：RT 里若含冒号也不会被截断（旧写法取 parts[2] 会丢尾巴）
+        parts = line.split(":", 2)
         if len(parts) >= 3 and not parts[0].startswith("eyJ"):
             items.append((parts[0].strip(), parts[1].strip(), parts[2].strip()))
         elif len(parts) == 2 and not parts[0].startswith("eyJ"):
@@ -300,6 +304,48 @@ def _bootstrap_store():
 
 
 _bootstrap_store()
+
+
+def _jwt_payload_local(tok):
+    """本地解 JWT payload（不验签，仅用于体检与取名）。失败返回 {}。"""
+    try:
+        seg = tok.split(".")
+        if len(seg) != 3:
+            return {}
+        s = seg[1]; s += "=" * (4 - len(s) % 4)
+        d = json.loads(base64.urlsafe_b64decode(s))
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _token_sanity(rt, at):
+    """凭据本地体检：把 RT/AT 的结构问题翻译成可执行的排障提示（不联网）。
+
+    合法 CN WorkBuddy 凭据（实测 2026-09-28）：
+      · AT：RS256 JWT，typ=Bearer，iss=https://www.codebuddy.cn/auth/realms/copilot
+      · RT：HS512 JWT，typ=Offline，iss/aud 同为上述 realm，azp=console
+    服务端对不合规凭据只回一句 12153 ... token format error，这里提前说清楚是哪一种。
+    """
+    tips = []
+    for name, tok in (("RT", rt), ("AT", at)):
+        tok = (tok or "").strip()
+        if not tok:
+            continue
+        if not tok.startswith("eyJ") or tok.count(".") != 2:
+            tips.append("%s 不是 eyJ 开头的三段式 JWT（长度 %d）——被截断、带了引号/空格，或粘错了字段" % (name, len(tok)))
+            continue
+        pl = _jwt_payload_local(tok)
+        typ = str(pl.get("typ", ""))
+        iss = str(pl.get("iss", ""))
+        if name == "RT" and typ and typ != "Offline":
+            tips.append("RT 的 typ=%s（应为 Offline）——%s" % (
+                typ, "很可能把 AT 粘到了 RT 位置，正确顺序是 手机号:AT:RT" if typ == "Bearer" else "字段粘错了"))
+        if name == "AT" and typ and typ != "Bearer":
+            tips.append("AT 的 typ=%s（应为 Bearer）——AT/RT 可能写反了" % typ)
+        if iss and ("codebuddy.cn" not in iss):
+            tips.append("%s 的签发域是 %s，不是 CN 站（www.codebuddy.cn/auth/realms/copilot）——国际版/其他应用的 token 在 CN 刷不了" % (name, iss[:70]))
+    return tips
 
 
 def jwt_user(tok):
@@ -440,6 +486,11 @@ def auto_refresh():
     updated = {}
     bad_rt = 0
     for user, ent in due.items():
+        tips = _token_sanity(ent.get("refresh_token", ""), ent.get("access_token", ""))
+        if tips:
+            print("   🩺 %s 凭据体检:" % user)
+            for t in tips[:3]:
+                print("      · %s" % t)
         try:
             at, nrt = refresh_one(ent.get("refresh_token", ""))
         except Exception:
