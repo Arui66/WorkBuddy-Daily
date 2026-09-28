@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v2.3
+🌱 WorkBuddy Daily - 全能签到脚本 v2.4
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -106,6 +106,7 @@
    · 画布与灵感：真实对话 + 桌面链（wbx_design_canvas_* / playbook_cta_click），失败回落 web 裸事件
    · 主题目录：和平精英主题取 /v2/operation-platform/appearance/resources 真 resource_key + meta
    · 备用口径：抽奖的 chances 支持 lottery/summary、兑换状态支持 redeem/summary 补位
+   · 凭据失效隔离：AT/RT 过期或格式错只跳过该账号并给出排障提示，不再整轮崩溃
    · 微信关注任务：需真人扫码关注满 24 小时，脚本识别并提示，不自动完成
    · 数据文件：wb_refresh_tokens.json 自动生成与维护，无需手动管理
    · 新增账号：变量值末尾追加一行 "手机号:AT:RT" 即可，下次运行自动并入
@@ -437,6 +438,7 @@ def auto_refresh():
         return
     print("🔑 检查到 %d 个账号需要续期..." % len(due))
     updated = {}
+    bad_rt = 0
     for user, ent in due.items():
         try:
             at, nrt = refresh_one(ent.get("refresh_token", ""))
@@ -449,10 +451,17 @@ def auto_refresh():
             print("   🔄 %s token已自动续期(新有效期90天)" % user)
         else:
             print("   ⚠️ %s 续期失败: %s" % (user, nrt))
+            if ("token format error" in str(nrt)) or ("12153" in str(nrt)):
+                bad_rt += 1
         time.sleep(1)
     if updated:
         json.dump(store, open(REFRESH_STORE, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
         _rebuild_token_file(store)
+    if bad_rt:
+        print("   💡 RT 被服务端判为非法格式（token format error / 12153），常见原因：")
+        print("      1) 变量格式不是 手机号:AT:RT（顺序写反、带了引号/空格/换行也算）")
+        print("      2) 粘成了别的应用的 token（例：CodeBuddy CLI，或旧版 workbuddy-desktop.info 里另一套）")
+        print("      3) 该 RT 已被其他工具轮换过——最稳：python workbuddy_login.py 重新登录拿最新一行")
 
 
 def load_accounts():
@@ -681,6 +690,19 @@ def chat_request_events(uid, nick, conv_id, prompt, txt, mode="craft"):
 
 
 # ---------- 查询 ----------
+def _json_or_empty(r):
+    """容错取 JSON：非 JSON 响应（401/403 空体、HTML 错误页）返回 {}，不抛异常。
+
+    背景（issue #12/#13）：AT/RT 失效时上游返回非 JSON，旧代码直接 .json() 会把
+    JSONDecodeError 抛出 run_account，整个运行崩掉、后续账号全部丢失。
+    """
+    try:
+        d = r.json()
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
 def queryCredits(s):
     """积分查询：套餐总量/剩余/已用"""
     try:
@@ -2827,9 +2849,18 @@ def run_account(idx, acc, do_desktop):
     # 查询
     credits, paid = queryCredits(s)
     usage = queryUsage(s)
-    prof = s.get(BASE + "/v2/activity/growth/profile", timeout=25, verify=False).json().get("data", {})
-    energy = s.get(BASE + "/v2/activity/growth/energy", timeout=25, verify=False).json().get("data", {}).get("balance")
-    streak = s.get(BASE + "/v2/activity/growth/streak", timeout=25, verify=False).json().get("data", {}).get("streak", {})
+    rp = s.get(BASE + "/v2/activity/growth/profile", timeout=25, verify=False)
+    pj = _json_or_empty(rp)
+    if rp.status_code in (401, 403) or not pj:
+        log("  ❌ 凭据失效（HTTP %s）：AT/RT 已过期或被轮换 —— 请重新登录桌面端，或用 workbuddy_login.py" % rp.status_code)
+        log("     重新获取一行「手机号:AT:RT」后更新变量，本账号本次跳过（不影响其他账号）")
+        return msgs, {"idx": idx, "note": acc.get("note", ""), "done": 0, "total": 0,
+                      "rest": ["凭据失效"], "level": "?", "energy": "?"}
+    prof = pj.get("data", {}) or {}
+    energy = (_json_or_empty(s.get(BASE + "/v2/activity/growth/energy", timeout=25,
+                                            verify=False)).get("data") or {}).get("balance")
+    streak = ((_json_or_empty(s.get(BASE + "/v2/activity/growth/streak", timeout=25,
+                                             verify=False)).get("data") or {}).get("streak") or {})
     summary["credits"] = credits
     summary["usage"] = usage
     summary["streak"] = streak.get("days", "?")
@@ -2909,10 +2940,12 @@ def run_account(idx, acc, do_desktop):
     if n == 0:
         log("   无待领奖励")
     # 终态
-    st_all = s.get(BASE + "/v2/activity/growth/tasks", timeout=25, verify=False).json().get("data", {}).get("tasks", [])
+    st_all = (_json_or_empty(s.get(BASE + "/v2/activity/growth/tasks", timeout=25,
+                                      verify=False)).get("data") or {}).get("tasks", [])
     done = sum(1 for t in st_all if isinstance(t, dict) and t.get("accept_status") in ("claimed", "completed"))
     rest = [task_cn(t.get("task_code","")) for t in st_all if isinstance(t, dict) and t.get("accept_status") not in ("claimed", "completed")]
-    prof2 = s.get(BASE + "/v2/activity/growth/profile", timeout=25, verify=False).json().get("data", {})
+    prof2 = (_json_or_empty(s.get(BASE + "/v2/activity/growth/profile", timeout=25,
+                                       verify=False)).get("data") or {})
     summary.update({"done": done, "total": len(st_all), "rest": rest,
                     "level": prof2.get("level", "?"), "energy": energy})
     log("🏁 %s: 完成%s/%s 等级%s 剩余: %s" % (acc.get("note", ""), done, len(st_all), prof2.get("level", "?"),
@@ -3104,13 +3137,27 @@ def main():
         with ThreadPoolExecutor(max_workers=min(6, len(ACCOUNTS))) as ex:
             futs = {ex.submit(run_account, i + 1, acc, False): i for i, acc in enumerate(ACCOUNTS)}
             for f in as_completed(futs):
-                msgs_part, sm = f.result()
+                try:
+                    msgs_part, sm = f.result()
+                except Exception as e:      # 单账号异常不拖垮整个查询
+                    i = futs[f]
+                    msgs_part = ["[%s][账号%d] ❌ 查询异常: %s" % (time.strftime("%H:%M:%S"), i + 1, str(e)[:120])]
+                    print(msgs_part[0])
+                    sm = {"idx": i + 1, "note": ACCOUNTS[i].get("note", ""), "done": 0, "total": 0,
+                          "rest": ["异常中断"], "level": "?", "energy": "?"}
                 all_msgs.extend(msgs_part)
                 summaries.append(sm)
     else:
         # 云端任务并发，桌面任务串行
         for i, acc in enumerate(ACCOUNTS):
-            msgs_part, sm = run_account(i + 1, acc, do_desktop)
+            try:
+                msgs_part, sm = run_account(i + 1, acc, do_desktop)
+            except Exception as e:      # 单账号异常不拖垮后续账号（issue #12/#13）
+                msgs_part = ["[%s][账号%d] ❌ 本账号异常已跳过（不影响其他账号）: %s"
+                             % (time.strftime("%H:%M:%S"), i + 1, str(e)[:140])]
+                print(msgs_part[0])
+                sm = {"idx": i + 1, "note": acc.get("note", ""), "done": 0, "total": 0,
+                      "rest": ["异常中断"], "level": "?", "energy": "?"}
             all_msgs.extend(msgs_part)
             summaries.append(sm)
             time.sleep(2)
