@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v2.2
+🌱 WorkBuddy Daily - 全能签到脚本 v2.3
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -14,8 +14,8 @@
    ✅ 成长任务       18 项云端/桌面全覆盖 + 轻量云专家（仅公益专家需真实捐款）
    🏫 开学季活动     分享/对话/桌面对话/专家 + 幸运大转盘（含瑞幸/KFC/酷狗实物券）
                      ※ 以服务端 in_period 判定活动期，非进行期自动跳过（不会误报失败）
-   📱 小程序任务     Tasks_1~7 链式任务（每日零点解锁一环，日志给出解锁日期）
-                     已到账 Tasks_1~5；校园日随开学季结束已从列表撒下
+   📱 小程序任务     Tasks_1~7 链式任务（均已到账；每日零点解锁一环，日志给出解锁日期）
+                     校园日随开学季结束已从列表撤下（奖励此前已入账）
    🎮 8 项互动玩法   抽奖、盲盒、Buddy、派猫猫旅行、连签兑换、补签卡、礼包补偿、徽章
    💰 三类查询       积分套餐（剩余/总量/已用）、用量统计、成长数据（等级/连签/能量）
    🎁 自动领奖       扫描全部已完成任务自动领取；completed 未领的自动补领
@@ -101,6 +101,8 @@
    · 真实会话 id：专家/技能任务的 requestId/messageId 取自真实对话的服务端消息 id（cmb- 形态）
    · 真实场景表：模板任务取服务端 /console/as/support/scenes 的 id（拉不到回落内置表）
    · 签到读数：签到后读 /billing/meter/checkin-activity-status（连签天数/累计积分/连签奖励日）
+     并做活动到期预警：距 end_time ≤7 天或活动已关闭时，日志给出 ⚠️ 提示
+   · mp 定时任务：Sequential_Tasks_4 用官方 mp 指纹形状（mode=CLOUD、无 rrule），失败回落桌面域
    · 画布与灵感：真实对话 + 桌面链（wbx_design_canvas_* / playbook_cta_click），失败回落 web 裸事件
    · 主题目录：和平精英主题取 /v2/operation-platform/appearance/resources 真 resource_key + meta
    · 备用口径：抽奖的 chances 支持 lottery/summary、兑换状态支持 redeem/summary 补位
@@ -712,8 +714,35 @@ def queryUsage(s):
 
 
 # ---------- 各任务配方（全部经过实测） ----------
+def _checkin_activity_warn(sd):
+    """签到活动到期预警（只读判断，对齐上游 checkin_activity.go 口径）。
+
+    CN 字段：active / end_time（"YYYY-MM-DD HH:MM:SS" CST）/ activity_name。
+    距 end_time 不足 7 天、或活动已关闭时给出提示，避免“活动结束才发现收入断档”。
+    """
+    import datetime
+    name = sd.get("activity_name") or "签到活动"
+    if sd.get("active") is False:
+        return "⚠️%s已结束" % name
+    raw = str(sd.get("end_time") or "")
+    if len(raw) < 19:
+        return ""
+    try:
+        end = datetime.datetime.strptime(raw[:19], "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return ""
+    days = (end - beijing_now().replace(tzinfo=None)).total_seconds() / 86400.0
+    if days < 0:
+        return "⚠️%s已到期" % name
+    if days <= 7:
+        # 当日用「今日」，其余直接给日期（天数四舍五入容易歧义）
+        when = "今日" if end.date() == beijing_today() else "%d-%d" % (end.month, end.day)
+        return "⚠️%s%s结束" % (name, when)
+    return ""
+
+
 def _checkin_tail(s):
-    """签到活动读数尾注：连签天数 / 累计积分 / 连签奖励日（只读，失败返回空串）。
+    """签到活动读数尾注：连签天数 / 累计积分 / 连签奖励日 / 到期预警（只读，失败返回空串）。
 
     上游多仓共用口径：POST /v2/billing/meter/checkin-activity-status 返回
     today_checked_in / streak_days / total_credits / is_streak_day / next_streak_day。
@@ -730,6 +759,9 @@ def _checkin_tail(s):
             parts.append("🎉今日为连签奖励日")
         elif sd.get("next_streak_day"):
             parts.append("距下一连签奖励 %s 天" % sd["next_streak_day"])
+        warn = _checkin_activity_warn(sd)
+        if warn:
+            parts.append(warn)
         return "（%s）" % "，".join(parts) if parts else ""
     except Exception:
         return ""
@@ -1927,6 +1959,7 @@ def mp_base(uid, nick):
     return {"timestamp": now, "ideType": "WorkBuddy_MP", "ideVersion": "2.4.0",
             "extName": "workbuddy-mp", "extVersion": "2.4.0", "product": "SaaS",
             "ideName": "wx_app_cloud", "platform": "mini_program",
+            "source": "mini_program",   # 官方源码口径：mp 身份 = wx_app_cloud + WorkBuddy_MP + source
             "os": "windows", "osVersion": "11", "arch": "x64",
             "machineId": mp_machine_id(uid), "timezone": "Asia/Shanghai",
             "userId": uid, "userNickname": nick}
@@ -2191,16 +2224,17 @@ def t_sequential_tasks_3(s, uid, nick, log):
 def t_sequential_tasks_4(s, uid, nick, log):
     """小程序成长任务 Sequential_Tasks_4：创建 1 个定时任务（+100c+5e）
 
-    判据：复用 automation_1 同源的桌面事件 automated_task_create_suc
-    （上游实测：PC 口径事件可点亮该 mp 任务）。
+    官方小程序源码快照口径（HanawaBanana 同步 ithtelab 官方包内 upstream/ 快照）：判据是
+    **mp 指纹** automated_task_create_suc —— ideName=wx_app_cloud + mode=CLOUD，
+    **不带** schedule/rrule 对象（桌面 automation_1 的 rrule 虚拟对象是另一域口径，
+    照抄会失去 mp 关联），走小程序上报通道。未点亮时回落桌面域事件（旧口径）。
     """
     def _evs(i):
-        ev = {"eventCode": "automated_task_create_suc", "name": "wb2api 定时任务",
-              "source": "manually", "modelId": "fast-model", "modelIsThinking": True,
-              "connectorCount": 0, "skills": "", "skillCount": 0,
-              "scheduleType": "once", "mode": "LOCAL"}
-        report_desktop_events(s, uid, nick, [ev])
-        return []
+        return [{"eventCode": "automated_task_create_suc", "mode": "CLOUD",
+                 "name": "wb2mp 定时任务", "source": "manually",
+                 "modelId": "fast-model", "modelIsThinking": False,
+                 "connectorCount": 0, "skills": "", "skillCount": 0,
+                 "scheduleType": "once"}]
     st, cur, tgt = _mp_prog(s, "Sequential_Tasks_4")
     if st is None:
         log("   小程序定时任务: mp 口径未下发该任务，跳过")
@@ -2219,8 +2253,8 @@ def t_sequential_tasks_4(s, uid, nick, log):
                 log("   小程序定时任务: accept 失败，跳过")
             return
         time.sleep(WRITE_GAP)
-    _evs(0)
-    log("   小程序定时任务: 桌面口径 automation 事件已上报")
+    mp_report(s, uid, nick, _evs(0))
+    log("   小程序定时任务: mp 指纹 automation 事件已上报")
     time.sleep(2.5)
     st2, cur2, tgt2 = _mp_prog(s, "Sequential_Tasks_4")
     if st2 in ("completed", "claimed"):
@@ -2228,7 +2262,23 @@ def t_sequential_tasks_4(s, uid, nick, log):
         if st2 == "completed":
             _mp_claim(s, "Sequential_Tasks_4", log)
     else:
-        log("   小程序定时任务: %s %s/%s（服务端暂未关联）" % (st2, cur2, tgt2))
+        # 回落：桌面域 automation 事件（旧口径，实测同样能点亮）
+        try:
+            report_desktop_events(s, uid, nick, [{
+                "eventCode": "automated_task_create_suc", "name": "wb2api 定时任务",
+                "source": "manually", "modelId": "fast-model", "modelIsThinking": True,
+                "connectorCount": 0, "skills": "", "skillCount": 0,
+                "scheduleType": "once", "mode": "LOCAL"}])
+            time.sleep(2.5)
+            st2, cur2, tgt2 = _mp_prog(s, "Sequential_Tasks_4")
+        except Exception:
+            pass
+        if st2 in ("completed", "claimed"):
+            log("   小程序定时任务: ✅ 已完成（桌面域回落） %s/%s" % (cur2, tgt2))
+            if st2 == "completed":
+                _mp_claim(s, "Sequential_Tasks_4", log)
+        else:
+            log("   小程序定时任务: %s %s/%s（服务端暂未关联）" % (st2, cur2, tgt2))
 
 
 def t_sequential_tasks_5(s, uid, nick, log):
