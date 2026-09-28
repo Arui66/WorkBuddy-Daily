@@ -249,7 +249,7 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 | 1 | `Sequential_Tasks_1` 完成 1 次对话 | +100 积分 +5 能量 | mini `chat_request_send` |
 | 2 | `Sequential_Tasks_2` 选中专家并完成对话 | +200 积分 +5 能量 | mp 指纹 `expert_actual_use` |
 | 3 | `Sequential_Tasks_3` 完成 5 次对话 | +300 积分 +5 能量 | 逐条累加，自动补差额 |
-| 4 | `Sequential_Tasks_4` 创建 1 个定时任务 | +100 积分 +5 能量 | 桌面口径 `automated_task_create_suc` |
+| 4 | `Sequential_Tasks_4` 创建 1 个定时任务 | +100 积分 +5 能量 | mp 指纹 `automated_task_create_suc`（`mode=CLOUD`，无 rrule 对象） |
 | 5 | `Sequential_Tasks_5` 使用 1 次 GLM5.2 | +100 积分 +5 能量 | mini chat + 模型字段 |
 | 6 | `Sequential_Tasks_6` 完成 10 次对话 | — | 同 Tasks_1/3 形状，target=10 |
 | 7 | `Sequential_Tasks_7` 体验灵感功能 | — | mp 指纹 `playbook_cta_click` + `playbook_prompt_send` |
@@ -257,7 +257,7 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 
 > 🔗 **链式机制**：Tasks_1~7 完成一环后**次日零点**解锁下一环（accept 返回 `task locked until <日期>`），脚本每次运行自动检测并推进，无需人工干预；日志会直接给出解锁日期与「今日未解锁」提示，不会被当成失败。
 >
-> ✅ 已验证到账：Tasks_1~4 + 校园日 = **+800 积分 +20 能量**；**Tasks_5 已 claimed**（+100 积分 +5 能量），Tasks_6 已下发并锁定至次日零点、Tasks_7 待下发，均由链式机制自动推进
+> ✅ 已到账：**Tasks_1~7 全部 claimed**（链式机制逐日自动推进），校园日奖励也已在活动期内入账
 
 > 💡 这三项需 `X-Client-Platform: miniprogram` 请求头才下发（查询/接受/领奖三处都要），脚本已自动处理。
 > 💡 判据上报走小程序指纹头族（`X-Client-Platform: mp-weixin` + `X-Client-Product: workbuddy-mp`），对齐官方 appservice 埋点。
@@ -301,7 +301,7 @@ python workbuddy_daily.py --gap 2.0      # 写动作间隔秒数（默认 1.5，
 - **🧩 前置依赖自动补救**：accept 逐项 `message` 里解析 `prerequisite not met: <任务>`，先补跑前置任务（如首只 Buddy 领养）再重试登记，新账号不再卡在「17 项未落账」。
 - **🎯 真实会话 id**：专家/技能类任务的 `requestId` / `messageId` 取自真实对话的服务端消息 id（`cmb-` 形态），并对齐 `has_expert` / `mode: LOCAL` 口径——上游 panel 三账号实测点亮 `Expert_lighthouse`。
 - **🎁 领奖口径对齐**：连登奖励按服务端 `redemption_status` 判定档位（已领不重发请求），实物奖自动提示填写收货地址。
-- **📈 签到读数**：签到后读签到活动状态，报告直接给出**连签天数 / 累计积分 / 距下一次连签奖励的天数**。
+- **📈 签到读数 + 到期预警**：签到后读签到活动状态，报告给出**连签天数 / 累计积分 / 距下一次连签奖励的天数**；距活动 `end_time` ≤7 天或活动已关闭时给出 ⚠️ 提示（避免“活动结束才发现收入断档”）。
 - **🧭 生态口径对齐**：画布 / 灵感走真实对话 + 桌面链，主题目录动态取真 `resource_key`，自动化任务用真实 rrule 对象；抽奖（`lottery/summary`）与兑换（`redeem/summary`）均带备用接口口径。
 - **🏫 开学季活动**：自动执行开学季限时任务（分享 / 对话 / 专家）+ 幸运大转盘抽奖。
 - **🌙 夜猫子规则对齐**：官方为「每日 1 次 × 累计 3 天」，脚本有响应即停，不会一晚空跑多次。
