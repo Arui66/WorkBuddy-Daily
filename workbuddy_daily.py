@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v2.5
+🌱 WorkBuddy Daily - 全能签到脚本 v2.6
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -40,9 +40,16 @@
    python workbuddy_daily.py --school-only 只跑开学季活动（不做成长中心任务）
    python workbuddy_daily.py --only 3      只跑第 3 个账号
    python workbuddy_daily.py --gap 2.0     写动作间隔秒数（默认 1.5，最低 1.0）
+   python workbuddy_daily.py --tasks checkin,travel        只跑白名单子任务
+   python workbuddy_daily.py --skip-tasks lottery,redeem  跳过指定子任务
 
 🔑 环境变量
    WORKBUDDY_REFRESH_TOKEN   【必填】多账号刷新令牌，换行分隔
+   WORKBUDDY_TASKS           【可选】白名单：只跑列出的子任务（逗号/空格分隔）
+   WORKBUDDY_SKIP_TASKS      【可选】黑名单：跳过列出的子任务
+     别名：checkin 签到 / travel 旅行 / lottery 抽奖 / redeem 连登兑换 / gift 礼包补偿
+           makeup 补签 / badges 徽章 / blindbox 盲盒 / buddy_info Buddy信息 / desktop 桌面 / school 开学季
+     例：只想每天做签到+旅行 → WORKBUDDY_TASKS=checkin,travel（其余任务以后想做时再放开）
    PUSHPLUS_TOKEN            【可选】PushPlus 推送（微信）
    BARK_URL                  【可选】Bark 推送（iOS），如 https://api.day.app/xxxxxxxx
    WECOM_WEBHOOK             【可选】企业微信群机器人（完整 URL 或仅 key）
@@ -108,6 +115,8 @@
    · 主题目录：和平精英主题取 /v2/operation-platform/appearance/resources 真 resource_key + meta
    · 备用口径：抽奖的 chances 支持 lottery/summary、兑换状态支持 redeem/summary 补位
    · 凭据失效隔离：AT/RT 过期或格式错只跳过该账号并给出排障提示，不再整轮崩溃
+   · 子任务开关：WORKBUDDY_TASKS（白名单）/ WORKBUDDY_SKIP_TASKS（黑名单）——
+     可只留签到+旅行，其余任务以后想做时再放开（积分一个月有效期，不需一次领完）
    · 凭据体检：续期前本地看 RT/AT 结构与签发域（typ=Offline / codebuddy.cn realm），
      把 12153 token format error 提前翻译成“粘反了 / 粘错了文件 / 截断了”
    · 微信关注任务：需真人扫码关注满 24 小时，脚本识别并提示，不自动完成
@@ -556,6 +565,45 @@ if "--gap" in sys.argv:
         WRITE_GAP = max(1.0, float(sys.argv[sys.argv.index("--gap") + 1]))
     except (ValueError, IndexError):
         pass
+
+
+def _parse_task_filter(raw):
+    """解析子任务过滤串：逗号/顿号/空格分隔，大小写不敏感。"""
+    return {x.strip().lower() for x in re.split(r"[,\uff0c\u3001\s]+", raw or "") if x.strip()}
+
+
+TASK_ONLY = _parse_task_filter(os.environ.get("WORKBUDDY_TASKS") or os.environ.get("WORKBUDDY_ONLY_TASKS"))
+TASK_SKIP = _parse_task_filter(os.environ.get("WORKBUDDY_SKIP_TASKS"))
+if "--tasks" in sys.argv:
+    try:
+        TASK_ONLY = _parse_task_filter(sys.argv[sys.argv.index("--tasks") + 1])
+    except IndexError:
+        pass
+if "--skip-tasks" in sys.argv:
+    try:
+        TASK_SKIP |= _parse_task_filter(sys.argv[sys.argv.index("--skip-tasks") + 1])
+    except IndexError:
+        pass
+
+
+def want(*codes):
+    """子任务开关：WORKBUDDY_TASKS（白名单）/ WORKBUDDY_SKIP_TASKS（黑名单）。
+
+    · 黑名单命中即跳过；白名单非空时未列出的也跳过（两者可叠加）
+    · 代号大小写不敏感；常用别名：checkin 每日签到 / travel 旅行 / lottery 抽奖 /
+      redeem 连登兑换 / gift 礼包补偿 / makeup 补签 / badges 徽章 / blindbox 盲盒 /
+      buddy_info Buddy 信息 / desktop 桌面任务 / school 开学季
+    · 只影响「主动执行」：accept、领奖、前置补救（first_buddy）不受影响，
+      因此被跳过的任务不会被完成，也就不会被领奖计入积分
+    """
+    if not TASK_ONLY and not TASK_SKIP:
+        return True
+    names = {str(c).strip().lower() for c in codes}
+    if names & TASK_SKIP:
+        return False
+    if TASK_ONLY and not (names & TASK_ONLY):
+        return False
+    return True
 
 # ---------- 基础 ----------
 def new_api(tok):
@@ -2930,49 +2978,71 @@ def run_account(idx, acc, do_desktop):
     # 桌面任务先做（新账号必须先有真实桌面会话，否则接受会被回滚、遥测不计数）
     need_rich = prog(s, "RichMeow_Chat")[0] not in ("completed", "claimed")
     need_skill = prog(s, "skill_1")[0] not in ("completed", "claimed")
+    desktop_skipped = False
+    if (need_rich or need_skill) and not want("desktop", "RichMeow_Chat", "skill_1"):
+        log("  🖥️ 桌面任务: 按配置跳过（desktop）")
+        need_rich = need_skill = False
+        desktop_skipped = True
     if do_desktop and (need_rich or need_skill):
         log("  🖥️ ── 桌面任务（引导优先） ──")
         t_desktop_tasks(s, uid, nick, tok, log, need_rich, need_skill)
     elif need_rich or need_skill:
         log("── 桌面任务跳过(--no-desktop): RichMeow=%s skill_1=%s ──" % (need_rich, need_skill))
     else:
-        log("  🖥️ 桌面任务: 已完成（RichMeow/skill_1），跳过")
+        if not desktop_skipped:
+            log("  🖥️ 桌面任务: 已完成（RichMeow/skill_1），跳过")
     # 任务
     log("  ☁️ ── 云端任务 ──")
+    if TASK_ONLY or TASK_SKIP:
+        log("   ⚙️ 任务过滤生效：%s%s" % (
+            ("仅执行 " + ",".join(sorted(TASK_ONLY))) if TASK_ONLY else "", 
+            (("；跳过 " + ",".join(sorted(TASK_SKIP))) if TASK_SKIP else "")))
+
+    def _run(label, codes, fn):
+        """子任务调度：按 TASK_ONLY / TASK_SKIP 决定是否执行，单项异常不拖垮整轮。"""
+        if not want(*codes):
+            log("   ⏭️ %s: 按配置跳过" % label)
+            return
+        try:
+            fn()
+        except Exception as e:
+            log("   ⚠️ %s 异常: %s" % (label, str(e)[:80]))
+
     # 前置：无 Buddy 实例时，其余任务 accept 会被服务端拒绝（prerequisite not met: first_buddy）
     t_first_buddy(s, uid, nick, log)
     t_accept_all(s, uid, nick, log)
-    t_sign(s, uid, nick, log)
-    t_team_3(s, uid, nick, log)
-    t_buddy_apps(s, uid, nick, log)
-    t_theme(s, uid, nick, log)
-    t_library(s, uid, nick, log)
-    t_canvas_automation(s, uid, nick, log)
-    t_expert_5(s, uid, nick, log)
-    t_template_5(s, uid, nick, log)
-    t_glm52(s, uid, nick, log)
-    t_black_cat(s, uid, nick, log)
-    t_lighthouse(s, uid, nick, log)
-    t_sequential_tasks(s, uid, nick, log)
-    t_sequential_tasks_2(s, uid, nick, log)
-    t_sequential_tasks_3(s, uid, nick, log)
-    t_sequential_tasks_4(s, uid, nick, log)
-    t_sequential_tasks_5(s, uid, nick, log)
-    t_sequential_tasks_6(s, uid, nick, log)
-    t_sequential_tasks_7(s, uid, nick, log)
-    t_school_season(s, uid, nick, log)
-    t_badges(s, uid, nick, log)
-    t_lottery(s, uid, nick, log)
-    t_blindbox(s, uid, nick, log)
-    t_buddy_info(s, uid, nick, log)
-    t_travel(s, uid, nick, log)
-    t_redeem(s, uid, nick, log, streak.get("days"))
-    t_gift_compensation(s, uid, nick, log)
-    t_makeup(s, uid, nick, log)
-    t_workstation(s, uid, nick, log, tok)
-    t_unknown_tasks(s, uid, nick, log)
+    _run("每日签到", ["checkin"], lambda: t_sign(s, uid, nick, log))
+    _run("召唤3次专家团", ["Expert_team_use_3"], lambda: t_team_3(s, uid, nick, log))
+    _run("发现应用/企鹅教师助手", ["Buddy_App", "Buddy_App_QQ"], lambda: t_buddy_apps(s, uid, nick, log))
+    _run("和平精英主题", ["Hp_Appearance"], lambda: t_theme(s, uid, nick, log))
+    _run("体验资料库", ["Library_read"], lambda: t_library(s, uid, nick, log))
+    _run("设计/自动化/灵感", ["create_canvas", "automation_1", "playbook_prompt"],
+         lambda: t_canvas_automation(s, uid, nick, log))
+    _run("召唤5次专家", ["expert_5"], lambda: t_expert_5(s, uid, nick, log))
+    _run("使用5个模板", ["template_5"], lambda: t_template_5(s, uid, nick, log))
+    _run("GLM-5.2/和AI聊天5次", ["Model_chat_GLM5.2", "chat_5"], lambda: t_glm52(s, uid, nick, log))
+    _run("夜猫子", ["black_cat"], lambda: t_black_cat(s, uid, nick, log))
+    _run("腾讯轻量云专家", ["Expert_lighthouse"], lambda: t_lighthouse(s, uid, nick, log))
+    _run("小程序对话", ["Sequential_Tasks_1"], lambda: t_sequential_tasks(s, uid, nick, log))
+    _run("小程序专家对话", ["Sequential_Tasks_2"], lambda: t_sequential_tasks_2(s, uid, nick, log))
+    _run("小程序对话5次", ["Sequential_Tasks_3"], lambda: t_sequential_tasks_3(s, uid, nick, log))
+    _run("小程序定时任务", ["Sequential_Tasks_4"], lambda: t_sequential_tasks_4(s, uid, nick, log))
+    _run("小程序GLM5.2", ["Sequential_Tasks_5"], lambda: t_sequential_tasks_5(s, uid, nick, log))
+    _run("小程序对话10次", ["Sequential_Tasks_6"], lambda: t_sequential_tasks_6(s, uid, nick, log))
+    _run("小程序灵感功能", ["Sequential_Tasks_7"], lambda: t_sequential_tasks_7(s, uid, nick, log))
+    _run("校园日活动", ["school_season", "school"], lambda: t_school_season(s, uid, nick, log))
+    _run("徽章", ["badges"], lambda: t_badges(s, uid, nick, log))
+    _run("抽奖", ["lottery"], lambda: t_lottery(s, uid, nick, log))
+    _run("盲盒", ["blindbox"], lambda: t_blindbox(s, uid, nick, log))
+    _run("Buddy 信息", ["buddy_info"], lambda: t_buddy_info(s, uid, nick, log))
+    _run("派猫猫旅行", ["travel"], lambda: t_travel(s, uid, nick, log))
+    _run("连登兑换", ["redeem"], lambda: t_redeem(s, uid, nick, log, streak.get("days")))
+    _run("礼包/补偿", ["gift"], lambda: t_gift_compensation(s, uid, nick, log))
+    _run("补签", ["makeup"], lambda: t_makeup(s, uid, nick, log))
+    _run("工作台搭建师", ["workstation_expert"], lambda: t_workstation(s, uid, nick, log, tok))
+    t_unknown_tasks(s, uid, nick, log)   # 未覆盖任务检测不受过滤影响
     # 开学季活动（可 --no-school 跳过）
-    if not NO_SCHOOL:
+    if not NO_SCHOOL and want("school", "school_season"):
         try:
             school_s = _school_session(tok)
             school_run_tasks(school_s, uid, nick, log)
